@@ -1,0 +1,209 @@
+# Deterministic containment policy for License Circuit Breaker.
+#
+# This table -- not a language model -- decides what happens to each descendant.
+# An LLM may explain or propose, but the verdict comes from here and every
+# decision cites the rule ids that produced it.
+#
+# Rules are evaluated in ascending `precedence`. The first rule whose `when`
+# block matches wins. Escalation rules sit at the top so that missing evidence
+# always beats a confident-looking containment verdict: when the graph is
+# incomplete we say so rather than claiming an all-clear.
+#
+# `when` supports these keys, all optional and ANDed together:
+#   lineage_complete   bool  -- every known path to the artifact is unbroken
+#   has_paths          bool  -- at least one lineage path was found
+#   affected           bool  -- the artifact uses a purpose the event removed
+#   has_replacement    bool  -- the event names an approved replacement source
+#   rebuildable        bool  -- this artifact can be rebuilt from that replacement
+#   artifact_class     list  -- artifact classes this rule applies to
+
+version: 1
+
+rules:
+  # --- Fail-closed rules. Precedence 10-19. -------------------------------
+  # Evaluated before LCB-R001: an artifact with no paths also reports incomplete
+  # lineage, and "no path could be cited" is the more precise diagnosis of the two.
+  - id: LCB-R002
+    description: >-
+      No lineage path connects this artifact to the revoked source. Impact is
+      unproven; a decision without a cited path is not evidence-backed.
+    precedence: 10
+    when:
+      has_paths: false
+    then:
+      actions: [escalate]
+      missing_evidence:
+        - "No lineage path from the revoked source could be cited"
+
+  - id: LCB-R001
+    description: >-
+      Lineage to this artifact is incomplete, so downstream impact cannot be
+      bounded. Escalate for manual review instead of asserting containment.
+    precedence: 11
+    when:
+      lineage_complete: false
+    then:
+      actions: [escalate]
+      missing_evidence:
+        - "DataHub lineage has a gap on at least one path to this artifact"
+        - "Manual confirmation required that no untracked copies exist"
+
+  - id: LCB-R003
+    description: >-
+      The artifact's type could not be classified, so no typed containment
+      action can be selected safely.
+    precedence: 12
+    when:
+      artifact_class: [unknown]
+    then:
+      actions: [escalate]
+      missing_evidence:
+        - "Artifact class could not be determined from DataHub metadata"
+
+  # --- Not affected. Precedence 20-29. -----------------------------------
+  - id: LCB-R010
+    description: >-
+      The artifact descends from the source but does not use any purpose the
+      event removed. No action, recorded with its lineage evidence.
+    precedence: 20
+    when:
+      affected: false
+    then:
+      actions: [no_action]
+      requires_approval: false
+
+  # --- Stored data. Precedence 30-39. ------------------------------------
+  - id: LCB-R020
+    description: Derived dataset or transformation rebuildable from an approved source.
+    precedence: 30
+    when:
+      artifact_class: [dataset, transformation]
+      has_replacement: true
+      rebuildable: true
+    then:
+      actions: [rebuild]
+
+  - id: LCB-R021
+    description: Derived dataset or transformation with no approved replacement; purge it.
+    precedence: 31
+    when:
+      artifact_class: [dataset, transformation]
+    then:
+      actions: [purge]
+
+  - id: LCB-R022
+    description: Feature table rebuildable from an approved source.
+    precedence: 32
+    when:
+      artifact_class: [feature]
+      has_replacement: true
+      rebuildable: true
+    then:
+      actions: [rebuild]
+
+  - id: LCB-R023
+    description: Feature table with no approved replacement; purge it.
+    precedence: 33
+    when:
+      artifact_class: [feature]
+    then:
+      actions: [purge]
+
+  # --- Learned artifacts. Precedence 40-49. ------------------------------
+  - id: LCB-R030
+    description: >-
+      Model or training snapshot that learned from revoked data, with an approved
+      replacement available. Retrain, then replace the served artifact.
+    precedence: 40
+    when:
+      artifact_class: [model, training_snapshot]
+      has_replacement: true
+      rebuildable: true
+    then:
+      actions: [retrain, replace]
+
+  - id: LCB-R031
+    description: >-
+      Model or training snapshot with no approved replacement. Stop serving it and
+      quarantine the artifact. Note that this contains serving; it does not prove
+      the model has unlearned the data.
+    precedence: 41
+    when:
+      artifact_class: [model, training_snapshot]
+    then:
+      actions: [freeze, quarantine]
+      missing_evidence:
+        - "Containment stops serving; it does not constitute proof of model unlearning"
+
+  # --- Retrieval surfaces. Precedence 50-59. -----------------------------
+  - id: LCB-R040
+    description: Vector index rebuildable from approved content; purge then rebuild.
+    precedence: 50
+    when:
+      artifact_class: [vector_index]
+      has_replacement: true
+      rebuildable: true
+    then:
+      actions: [purge, rebuild]
+
+  - id: LCB-R041
+    description: Vector index with no approved replacement; purge it.
+    precedence: 51
+    when:
+      artifact_class: [vector_index]
+    then:
+      actions: [purge]
+
+  - id: LCB-R042
+    description: Cache holding revoked-derived content; purge it.
+    precedence: 52
+    when:
+      artifact_class: [cache]
+    then:
+      actions: [purge]
+
+  # --- Serving and distribution. Precedence 60-69. -----------------------
+  - id: LCB-R050
+    description: Live API or deployment serving revoked-derived content; freeze it.
+    precedence: 60
+    when:
+      artifact_class: [api, deployment]
+    then:
+      actions: [freeze]
+
+  - id: LCB-R051
+    description: Export or extract that has left the platform boundary; quarantine it.
+    precedence: 61
+    when:
+      artifact_class: [export]
+    then:
+      actions: [quarantine]
+      missing_evidence:
+        - "Quarantine covers the tracked export; copies distributed outside the graph are not addressed"
+
+  # --- Backstop. Precedence 90+. -----------------------------------------
+  - id: LCB-R090
+    description: >-
+      Affected artifact that matched no specific rule. Escalate rather than
+      guessing at a containment action.
+    precedence: 90
+    when: {}
+    then:
+      actions: [escalate]
+      missing_evidence:
+        - "No specific containment rule matched this artifact class"
+
+# Priority scoring is additive and deterministic. Higher scores are worked first.
+priority:
+  exposure:
+    public: 60
+    internal: 35
+    offline: 10
+  criticality:
+    high: 30
+    medium: 15
+    low: 5
+  # Escalations are surfaced above routine containment so incomplete evidence
+  # is never buried at the bottom of a long plan.
+  escalation_bonus: 10
+  max: 100
