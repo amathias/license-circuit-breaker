@@ -47,6 +47,18 @@ Before modifying code, read these files completely:
 - If `origin` is absent or differs from the exact value above, stop and escalate to the portfolio
   coordinator.
 
+### Commit cadence
+
+- Commit and push at coherent, verified milestones or independently reviewable sub-milestones, not
+  after every edit or test run.
+- Keep implementation, tests, documentation, and handoff updates for one logical change together;
+  separate unrelated work.
+- Use meaningful imperative Conventional Commit subjects such as `feat:`, `fix:`, `test:`, or
+  `docs:`; never use `update`, `changes`, `fix stuff`, `WIP`, or `checkpoint`.
+- For non-trivial changes, add a commit body covering why, key safety or compatibility decisions,
+  and checks performed.
+- Do not create an unverified work-in-progress commit solely because work pauses or a chat ends.
+
 ## Definition of done
 
 A reviewer can ingest the demo graph, revoke a source license, inspect the complete impact analysis, approve a containment plan, watch real local descendants be disabled or rebuilt, verify that prohibited serving has stopped, inspect DataHub writeback, and reproduce the demo from the README.
