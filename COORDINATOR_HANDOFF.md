@@ -1,4 +1,4 @@
-﻿# Coordinator Handoff: License Circuit Breaker
+# Coordinator Handoff: License Circuit Breaker
 
 ## Relationship to the portfolio coordinator
 
@@ -75,8 +75,12 @@ Outstanding for Milestone A: deterministic seed/reset (needs Milestone B fixture
    `DATAHUB_GMS_TOKEN` for the official MCP process.
 3. **MCP transport:** use the coordinator-hosted private Streamable HTTP endpoint at
    `http://127.0.0.1:8000/mcp` during an SSM session and the equivalent loopback endpoint on EC2.
-4. **Repository strategy:** one independent local Git repository per submission; GitHub remotes
-   are deliberately deferred until the user creates the five public projects.
+4. **Repository strategy:** this submission remains an independent Git repository on `main`.
+   Its public repository is `https://github.com/amathias/license-circuit-breaker`, and local
+   `origin` uses the repository-scoped
+   `github-datahub-license-circuit-breaker` SSH alias. The primary project writer may push verified
+   milestones under the no-force rules in `AGENTS.md`; remotes and deploy keys remain
+   coordinator-owned.
 
 These decisions unblock local fixture work. Live integration remains blocked until the shared
 DataHub stack is healthy.
