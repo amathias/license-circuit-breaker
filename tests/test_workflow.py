@@ -6,7 +6,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from adapters.datahub import DataHubError, reversible_tag_writeback
+from adapters.datahub import reversible_tag_writeback
 from adapters.fake_datahub import FakeDataHubClient
 from app.context import build_paths, discover_descendants, validate_entity
 from app.namespace import Namespace, NamespaceViolation
@@ -260,10 +260,39 @@ class TestReversibleWriteback:
         assert not receipt.clean
         assert "restore" in receipt.detail
 
-    def test_write_failure_propagates(self, client):
+    def test_write_failure_is_captured_not_raised(self, client):
+        # The receipt is the evidence record; a raised exception would lose the
+        # fact that restoration ran.
         client.fail_next_write = True
-        with pytest.raises(DataHubError):
-            reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)
+        receipt = reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)
+        assert receipt.started
+        assert receipt.write_failed
+        assert not receipt.verified
+        assert not receipt.clean
+
+    def test_restoration_runs_when_the_verifying_reread_raises(self, client):
+        # The write landed; only the confirming read failed. Skipping rollback
+        # here would leave a stray tag on the shared instance.
+        before = sorted(client.get_tags(SOURCE))
+        client.fail_verify_read = True
+
+        receipt = reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)
+
+        assert receipt.started
+        assert not receipt.verified
+        assert receipt.restored
+        assert not receipt.clean
+        assert sorted(client.get_tags(SOURCE)) == before
+
+    def test_residual_risk_flagged_when_started_but_not_restored(self, client):
+        client.swallow_restore = True
+        receipt = reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)
+        assert receipt.residual_risk
+        assert "RESIDUAL" in receipt.detail
+
+    def test_no_residual_risk_on_the_happy_path(self, client):
+        receipt = reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)
+        assert not receipt.residual_risk
 
 
 class TestWritebackReceipts:
@@ -276,10 +305,17 @@ class TestWritebackReceipts:
 
     def test_failed_writeback_is_still_recorded(self, client, ledger):
         client.fail_next_write = True
-        with pytest.raises(DataHubError):
-            perform_reversible_writeback(client, SOURCE, NS, ledger=ledger, simulated=True)
+        perform_reversible_writeback(client, SOURCE, NS, ledger=ledger, simulated=True)
         entry = next(e for e in ledger.entries() if e["operation"] == "writeback")
         assert entry["succeeded"] is False
+        assert entry["payload"]["write_failed"] is True
+
+    def test_receipt_records_started_and_residual_flags(self, client, ledger):
+        client.swallow_restore = True
+        perform_reversible_writeback(client, SOURCE, NS, ledger=ledger, simulated=True)
+        entry = next(e for e in ledger.entries() if e["operation"] == "writeback")
+        assert entry["payload"]["started"] is True
+        assert entry["payload"]["residual_risk"] is True
 
     def test_unrestored_writeback_is_not_marked_successful(self, client, ledger):
         client.swallow_restore = True

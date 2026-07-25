@@ -22,6 +22,7 @@ Offline, against the deterministic in-memory fake — no DataHub required:
 APP_ENV=offline python -m demo.cli slice
 APP_ENV=offline python -m demo.cli seed
 APP_ENV=offline python -m demo.cli reset
+APP_ENV=offline python -m demo.cli restore
 python -m demo.cli verify        # verify the receipt ledger hash chain
 ```
 
@@ -29,10 +30,25 @@ Against the shared instance, with an SSM port-forwarding session already
 established by the coordinator:
 
 ```bash
-APP_ENV=live python -m demo.cli seed
-APP_ENV=live python -m demo.cli slice
-APP_ENV=live python -m demo.cli reset
+APP_ENV=live python -m demo.cli seed     # emits full catalog entries, then verifies by reread
+APP_ENV=live python -m demo.cli slice    # exits non-zero unless verified AND restored
+APP_ENV=live python -m demo.cli reset    # soft, exactly-allowlisted
+APP_ENV=live python -m demo.cli restore  # reverses the soft reset
 ```
+
+### Exit codes
+
+| Code | Meaning |
+|---|---|
+| 0 | Success |
+| 2 | Refused: sentinel missing, or target set not exactly the allowlist |
+| 3 | Refused by the namespace guard |
+| 4 | Seed emitted but could not be verified by reread |
+| 5 | Partial failure during reset or restore |
+| 6 | Slice completed but the writeback was not both verified and restored |
+
+Code 6 matters most. A good plan with a dirty writeback is not a passing run, and
+exiting zero would let CI treat residue on the shared instance as success.
 
 ## Evidence status
 
@@ -73,11 +89,33 @@ Four things are load-bearing in that output:
 |---|---|
 | Namespace | Every read, write, seed, reset, and enforcement target must resolve under `license.`; anything else raises `NamespaceViolation`. |
 | Global selectors | `*`, `all`, `%`, empty string rejected outright. |
-| Reset sentinel | Reset refuses unless `license.__fixture_sentinel__` exists and carries the fixture marker. |
-| Reset scope | Only entities carrying `lcb-demo-fixture` are removed; unmarked entities inside `license.` are left alone. |
-| Empty reset | An empty target list is an error, never an implicit "remove everything". |
-| Readiness | Fails closed unless token, MCP tools, project domain/tag, and `license.` entities are all positively verified. |
+| Reset sentinel | Reset refuses unless `license.__fixture_sentinel__` exists and carries both the fixture marker and the project tag. |
+| Reset exactness | The target set must match the allowlist exactly. Missing, extra, unmarked, or empty all fail closed. |
+| Reset blast radius | Soft status change plus tag clearing only. Shared domain and tag control entities are never created, mutated, or removed. |
+| Seed verification | Every allowlisted entity and edge is reread after emission; a failed reread fails the seed. |
+| Readiness | Mutates nothing. Requires token, MCP tools, exact project domain, both tag controls, every allowlisted entity active with required custom properties, and complete fixture lineage. |
+| Writeback | Restoration runs in `finally` from the moment the write is attempted, including when the verifying reread raises. |
 | Receipts | Secrets redacted before write; hash-chained for tamper evidence. |
+
+## Live-path corrections
+
+The coordinator rejected the first candidate (`c116a26`) on seven live-path
+defects. All are fixed; the ones worth knowing about:
+
+- **Seed only set tags.** A live instance got tags and nothing else — no
+  properties, no `artifact_class`, no domain, no active status, no lineage. The
+  graph looked seeded and was unusable. Now emits full catalog entries via SDK
+  proposals and verifies by reread. (ADR-015)
+- **MCP skipped `initialize`.** Hand-rolled JSON-RPC worked only by the server's
+  leniency. Now uses `ClientSession` over `streamable_http_client` with schema
+  introspection, batching, and `upstream=false` stated explicitly. (ADR-014)
+- **Readiness wrote a probe file** on every poll, and its domain check was
+  conditional on a domain existing — so `domain=None` passed the check designed to
+  catch it. (ADR-018)
+- **Rollback was skipped when the verifying reread raised**, leaving a stray tag
+  on shared state. Now runs in `finally`. (ADR-017)
+- **Packaging omitted `demo` and `policy`**, so an installed archive could not
+  seed, slice, or load a rule. No source-tree test could have caught it. (ADR-019)
 
 ## Contamination propagation
 

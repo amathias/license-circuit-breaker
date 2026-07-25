@@ -250,11 +250,156 @@ than whole-artifact.
 
 ---
 
+## ADR-014: MCP uses the official SDK session, not hand-rolled JSON-RPC
+
+**Date:** 2026-07-25 · **Status:** accepted · **Supersedes part of ADR-009**
+
+The first implementation posted JSON-RPC envelopes to the MCP URL with `httpx` and
+parsed SSE frames by hand. It never called `initialize`, which a conforming server
+is entitled to reject — the transport worked only by accident of the server being
+lenient.
+
+`adapters/mcp_client.py` now uses `mcp.ClientSession` over
+`streamable_http_client` with a real handshake. Tool schemas are introspected
+rather than assumed: `max_results` is clamped to the server's advertised maximum,
+and arguments a given worker does not declare are dropped instead of sent.
+
+`get_lineage` passes `upstream=False` explicitly. Some builds default to upstream,
+and relying on the default would return ancestors and produce a silently empty
+impact set. `max_hops` is bounded so traversal cannot wander into another
+project's subgraph before the namespace filter runs.
+
+`get_entities` is batched — one call for the whole demo graph instead of twelve.
+
+**Revisit if:** the application becomes async, at which point the session should be
+held open rather than opened per call.
+
+---
+
+## ADR-015: Seed emits a full catalog entry and verifies it by rereading
+
+**Date:** 2026-07-25 · **Status:** accepted
+
+Live seed previously called only `set_tags`. A live instance received tags and
+nothing else: no dataset properties, no `artifact_class`, no domain, no explicit
+active status, no lineage. The graph looked seeded and was unusable — and because
+the offline fake was populated directly, no test noticed.
+
+`adapters/catalog.py` emits `DatasetProperties`, `Status(removed=False)`,
+`GlobalTags`, `Domains`, and `UpstreamLineage` as SDK proposals. Seed then
+**rereads every allowlisted entity and edge** and raises `VerificationError`
+listing everything that failed. Emitting without verifying reports success for
+writes that never landed.
+
+**Entity model:** everything is a `dataset` URN carrying an `artifact_class`
+custom property, including models, feature tables, indexes, APIs, and exports.
+Native `mlModel` / `mlFeatureTable` entities are the better semantic fit but need
+their own aspect sets and lineage handling. A uniform dataset model is what can be
+verified deterministically in one milestone, and `artifact_class` carries the
+semantics the policy engine actually consumes. This closes the open question from
+task 4 of the original plan.
+
+**Revisit if:** the demo needs native ML entity types in the DataHub UI.
+
+---
+
+## ADR-016: Reset is a soft, exactly-allowlisted, reversible operation
+
+**Date:** 2026-07-25 · **Status:** accepted
+
+Reset previously replaced tags with an empty list, which is neither a removal nor
+a state a catalog can represent meaningfully.
+
+Reset now sets `Status(removed=True)` and clears the project tag association;
+`restore` reverses both. Soft state is reversible, preserves the audit trail, and
+never touches the shared domain or tag control entities — those are
+coordinator-owned scaffolding this project references and never mutates.
+
+The target set must match the allowlist **exactly**. Missing, extra, unmarked, or
+empty all fail closed. Strictness is deliberate: a partial set means fixtures were
+removed or re-tagged out of band, so the instance and the allowlist disagree about
+what this project owns. Soft-deleting a subset and reporting success would leave
+an operator believing the reset was complete. Partial failures during execution
+are recorded per-entity rather than aborting silently.
+
+**Revisit if:** hard deletion is ever required, which would need its own approval
+gate.
+
+---
+
+## ADR-017: Restoration runs in `finally`, from the moment the write is attempted
+
+**Date:** 2026-07-25 · **Status:** accepted · **Extends ADR-010**
+
+ADR-010's rollback ran only after a successful write and re-read. If the verifying
+re-read raised, the write had already landed and the exception took the short path
+out — leaving a stray tag on an instance shared with four other submissions.
+
+Rollback now runs in `finally`, armed the moment the write is attempted. The
+receipt records `started`, `write_failed`, `verified`, and `restored`
+independently, plus a derived `residual_risk` for "may have landed, was not
+restored". Collapsing these into one success flag would hide the fact that the
+instance was touched.
+
+The CLI exits non-zero unless the writeback was both verified **and** restored. A
+good plan with a dirty writeback is not a passing run, and exiting zero would let
+CI and the coordinator's promotion check treat residue as success.
+
+---
+
+## ADR-018: Readiness mutates nothing at all
+
+**Date:** 2026-07-25 · **Status:** accepted · **Extends ADR-012**
+
+ADR-012's readiness wrote and deleted a `.readiness` probe file to test
+writability. On an endpoint a reverse proxy polls, that is a filesystem mutation
+on every poll. A probe that mutates is not a probe.
+
+Writability is now inferred with `os.access`, and a missing state directory is
+*reported*, not created — creation belongs to application startup.
+
+Two checks were also genuinely broken. The domain comparison was conditional on a
+domain being present, so an entity with `domain=None` passed the check that exists
+to catch exactly that. And coverage was proven only against the sentinel, so a
+partially seeded instance read as ready. Readiness now requires the exact project
+domain, both tag controls, every allowlisted entity active with required custom
+properties, and complete fixture lineage.
+
+---
+
+## ADR-019: Packaging ships every runtime package, proven by installing it
+
+**Date:** 2026-07-25 · **Status:** accepted
+
+`pyproject.toml` declared only `app` and `adapters`. A wheel built from it omitted
+`demo` (the fixture graph and the seed/slice CLI) and `policy` (the rule table), so
+an installed archive imported but could not seed, slice, or evaluate a single
+rule. The source-tree test suite could not notice, because a source checkout has
+those directories on `sys.path` regardless.
+
+`policy` is now a package shipping `rules.yaml` as package data, and the loader
+resolves it through the package rather than by walking up from `app/`. The live
+`acryl-datahub` and `mcp` dependencies are declared. A console script is exposed.
+
+`tests/test_packaging.py` assembles the shippable file list, installs it into an
+isolated virtualenv, imports every package, loads the rule table, and runs the
+offline slice end to end. It also asserts `.env`, `.state`, and `.venv` never reach
+the archive. It is marked `slow` — roughly twelve minutes, dominated by two
+isolated `acryl-datahub` installs.
+
+The archive is built from `git ls-files --cached --others --exclude-standard`
+rather than `git archive HEAD`, so it validates the tree being worked on. Using
+`HEAD` meant every packaging fix failed its own test until it happened to be
+committed.
+
+---
+
 ## Versions
 
-**Not yet recorded.** This session was barred from AWS access, so no live DataHub
-connection was made. DataHub, `acryl-datahub`, `datahub-agent-context`, and MCP
-integration versions must be captured during the coordinator's live verification
-pass.
+**No live DataHub evidence has been captured.** This session was barred from AWS
+access, so no connection to the shared instance was made and no token was
+requested or handled. Live versions must be captured during the coordinator's
+verification pass.
 
-Local toolchain in use: Python 3.13.2, ruff 0.16.0, pytest 8.x.
+Pinned and installed locally: `acryl-datahub` 1.6.0.x (matching the coordinator's
+DataHub 1.6.0 stack), `mcp` 1.28.1, Python 3.13.2, ruff 0.16.0, pytest 8.x.

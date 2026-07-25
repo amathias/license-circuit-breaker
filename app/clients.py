@@ -8,7 +8,7 @@ evidence.
 
 from __future__ import annotations
 
-from adapters.datahub import DataHubClient, HttpDataHubClient
+from adapters.datahub import DataHubClient, LiveDataHubClient
 from adapters.fake_datahub import FakeDataHubClient
 from app.config import Settings
 
@@ -30,7 +30,7 @@ def build_client(settings: Settings) -> DataHubClient:
     if is_offline(settings):
         return build_offline_client(settings)
 
-    return HttpDataHubClient(
+    return LiveDataHubClient(
         gms_url=settings.datahub_gms_url,
         mcp_url=settings.datahub_mcp_url,
         token=settings.datahub_token,

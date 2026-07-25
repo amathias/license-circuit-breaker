@@ -50,7 +50,9 @@ class TestReadiness:
             "datahub_token",
             "datahub_endpoints",
             "mcp_capabilities",
-            "project_entities",
+            "project_controls",
+            "entity_coverage",
+            "fixture_lineage",
         } <= names
 
     def test_degraded_when_token_missing(self, client, monkeypatch):

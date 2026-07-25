@@ -13,7 +13,7 @@ from adapters.datahub import DataHubError
 from adapters.fake_datahub import FakeDataHubClient
 from app.namespace import Namespace, NamespaceViolation
 from demo.graph import FIXTURE_MARKER, NODES, SENTINEL_URN, SOURCE
-from demo.seed import SeedError, entity_is_ours, reset, seed, verify_isolation
+from demo.seed import SeedError, entity_is_ours, reset, restore, seed, verify_isolation
 
 NS = Namespace(
     project_slug="license-circuit-breaker",
@@ -153,18 +153,34 @@ class TestResetSentinel:
         # An unmarked entity inside our own namespace also survives.
         assert unmarked in client.entities
 
-    def test_reset_clears_the_seeded_graph(self, client):
+    def test_reset_soft_removes_the_seeded_graph(self, client):
+        # Reset is soft: entities remain readable but inactive and untagged, so
+        # the operation is reversible and the audit trail survives.
         result = reset(client, NS)
         assert result.count == len(NODES) + 1
         for node in NODES:
-            assert client.get_entity(node.urn) is None
-        assert client.get_entity(SENTINEL_URN) is None
+            entity = client.get_entity(node.urn)
+            assert entity is not None
+            assert not entity.active
+            assert not entity.has_tag(FIXTURE_MARKER)
+        assert not client.get_entity(SENTINEL_URN).active
 
-    def test_reset_reports_skipped_unmarked_entities(self, client):
+    def test_reset_reports_no_failures_on_the_happy_path(self, client):
+        assert reset(client, NS).complete
+
+    def test_reset_refuses_when_an_allowlisted_entity_lost_its_marker(self, client):
+        # An allowlisted entity re-tagged out of band makes the target set
+        # partial. Soft-deleting the rest and reporting success would leave the
+        # operator believing the reset was complete.
         unmarked = "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)"
         client.add_entity(unmarked, name=unmarked, tags=("manual",))
-        result = reset(client, NS)
-        assert unmarked in result.skipped_unmarked
+        with pytest.raises(SeedError, match="partial"):
+            reset(client, NS)
+
+    def test_reset_refuses_when_an_allowlisted_entity_is_absent(self, client):
+        del client.entities[NODES[2].urn]
+        with pytest.raises(SeedError, match="partial"):
+            reset(client, NS)
 
     def test_reset_is_repeatable_after_a_reseed(self, client):
         reset(client, NS)
@@ -172,13 +188,57 @@ class TestResetSentinel:
         result = reset(client, NS)
         assert result.count == len(NODES) + 1
 
-    def test_reset_never_issues_an_empty_delete(self):
-        # Sentinel present but every other entity already gone: the remaining
-        # target list must still be explicit, never an implicit "everything".
+    def test_reset_refuses_a_partial_target_set(self, client):
+        # One fixture entity loses its marker out of band. The remaining set is
+        # partial, and guessing is worse than stopping.
+        victim = NODES[1].urn
+        entity = client.entities[victim]
+        client.add_entity(victim, tags=(NS.project_tag,), domain=entity.domain)
+        with pytest.raises(SeedError, match="partial"):
+            reset(client, NS)
+
+    def test_reset_refuses_when_nothing_is_marked(self):
+        # Sentinel present and marked, but no fixtures: an empty-ish target set
+        # must never be interpreted as a wildcard.
         client = FakeDataHubClient(namespace=NS)
         client.add_entity(SENTINEL_URN, tags=(FIXTURE_MARKER, NS.project_tag))
-        result = reset(client, NS)
-        assert result.removed == (SENTINEL_URN,)
+        # The sentinel alone is a partial set relative to the allowlist.
+        with pytest.raises(SeedError):
+            reset(client, NS)
+
+    def test_reset_is_idempotent(self, client):
+        first = reset(client, NS)
+        # After a soft reset the entities are unmarked, so a second reset finds
+        # nothing marked and refuses rather than acting on a partial set.
+        with pytest.raises(SeedError):
+            reset(client, NS)
+        assert first.complete
+
+    def test_restore_reverses_a_soft_reset(self, client):
+        reset(client, NS)
+        result = restore(client, NS)
+        assert result.restored
+        for node in NODES:
+            entity = client.get_entity(node.urn)
+            assert entity.active
+            assert entity.has_tag(FIXTURE_MARKER)
+            assert entity.has_tag(NS.project_tag)
+
+    def test_reset_never_touches_domain_or_tag_controls(self, client):
+        # The shared domain and tag entities are coordinator-owned scaffolding.
+        control_urns = [
+            "urn:li:domain:demo-license-circuit-breaker",
+            "urn:li:tag:project-license-circuit-breaker",
+            "urn:li:tag:lcb-demo-fixture",
+        ]
+        for urn in control_urns:
+            client.add_entity(urn, name=urn)
+        before = {u: client.entities[u] for u in control_urns}
+
+        reset(client, NS)
+
+        for urn in control_urns:
+            assert client.entities[urn] == before[urn]
 
 
 class TestFakeMatchesLiveGuards:

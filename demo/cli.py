@@ -24,7 +24,7 @@ from app.receipts import ReceiptLedger
 from app.rights import License, Purpose, RightsEvent, RightsState
 from app.workflow import build_impact_plan, perform_reversible_writeback
 from demo.graph import REPLACEMENT_SOURCE, SOURCE
-from demo.seed import SeedError, reset, seed
+from demo.seed import SeedError, VerificationError, reset, restore, seed
 
 
 def demo_rights_event() -> RightsEvent:
@@ -66,8 +66,22 @@ def cmd_seed(args: argparse.Namespace) -> int:
     client = build_client(settings)
     _report("seed", is_offline(settings))
 
-    result = seed(client, settings.namespace)
+    try:
+        result = seed(client, settings.namespace)
+    except VerificationError as exc:
+        # Emitting without verifying would report success for writes that never
+        # landed, so a failed reread is a failed seed.
+        print(f"Seed verification failed: {exc}", file=sys.stderr)
+        return 4
+    except SeedError as exc:
+        print(f"Seed refused: {exc}", file=sys.stderr)
+        return 2
+    except NamespaceViolation as exc:
+        print(f"Seed refused by namespace guard: {exc}", file=sys.stderr)
+        return 3
+
     print(f"Seeded {result.count} entities under prefix {settings.datahub_urn_prefix!r}")
+    print(f"Verified: {len(result.verified_entities)} entities, {len(result.verified_edges)} edges")
     print(f"Sentinel: {result.sentinel_urn}")
     print(f"Marker:   {result.marker}")
     return 0
@@ -87,9 +101,25 @@ def cmd_reset(args: argparse.Namespace) -> int:
         print(f"Reset refused by namespace guard: {exc}", file=sys.stderr)
         return 3
 
-    print(f"Removed {result.count} entities")
-    if result.skipped_unmarked:
-        print(f"Skipped {len(result.skipped_unmarked)} unmarked entities (not ours to remove)")
+    print(f"Reset: {result.describe()}")
+    if result.failed:
+        for urn, reason in result.failed:
+            print(f"  FAILED {urn}: {reason}", file=sys.stderr)
+        return 5
+    return 0
+
+
+def cmd_restore(args: argparse.Namespace) -> int:
+    settings = get_settings()
+    client = build_client(settings)
+    _report("restore", is_offline(settings))
+
+    result = restore(client, settings.namespace)
+    print(f"Restored {result.count} entities")
+    if result.failed:
+        for urn, reason in result.failed:
+            print(f"  FAILED {urn}: {reason}", file=sys.stderr)
+        return 5
     return 0
 
 
@@ -118,8 +148,18 @@ def cmd_slice(args: argparse.Namespace) -> int:
     receipt = perform_reversible_writeback(
         client, event.source_urn, settings.namespace, ledger=ledger, simulated=simulated
     )
-    print(f"\nWriteback: verified={receipt.verified} restored={receipt.restored}")
+    print(
+        f"\nWriteback: started={receipt.started} verified={receipt.verified} "
+        f"restored={receipt.restored}"
+    )
     print(f"  {receipt.detail}")
+
+    if receipt.residual_risk:
+        print(
+            "  WARNING: the write may have landed and was not restored. "
+            "The shared instance may retain state.",
+            file=sys.stderr,
+        )
 
     if args.output:
         payload = {
@@ -130,6 +170,18 @@ def cmd_slice(args: argparse.Namespace) -> int:
         with open(args.output, "w", encoding="utf-8") as handle:
             json.dump(payload, handle, indent=2, sort_keys=True)
         print(f"\nWrote plan to {args.output}")
+
+    # A writeback that was not both verified and restored is not a successful
+    # slice, even though the plan above may be perfectly good. Exiting zero here
+    # would let CI and the coordinator's promotion check treat a dirty shared
+    # instance as a pass.
+    if not receipt.clean:
+        print(
+            f"\nSlice FAILED: writeback verified={receipt.verified} "
+            f"restored={receipt.restored}",
+            file=sys.stderr,
+        )
+        return 6
 
     return 0
 
@@ -147,9 +199,10 @@ def main(argv: list[str] | None = None) -> int:
     sub = parser.add_subparsers(dest="command", required=True)
 
     sub.add_parser("seed", help="create the demo graph").set_defaults(func=cmd_seed)
-    sub.add_parser("reset", help="remove only entities this project seeded").set_defaults(
+    sub.add_parser("reset", help="soft-remove only entities this project seeded").set_defaults(
         func=cmd_reset
     )
+    sub.add_parser("restore", help="reverse a soft reset").set_defaults(func=cmd_restore)
     slice_parser = sub.add_parser("slice", help="run the vertical slice")
     slice_parser.add_argument("--output", help="write the plan to a JSON file")
     slice_parser.set_defaults(func=cmd_slice)

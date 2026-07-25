@@ -158,6 +158,8 @@ def perform_reversible_writeback(
         ledger.append(
             operation="writeback",
             urn=urn,
+            # Only a verified *and* restored write counts as success. A write that
+            # landed but was not rolled back left residue on a shared instance.
             succeeded=receipt.clean,
             simulated=simulated,
             detail=receipt.detail,
@@ -165,8 +167,11 @@ def perform_reversible_writeback(
                 "aspect": receipt.aspect,
                 "applied_value": receipt.applied_value,
                 "prior_value": receipt.prior_value,
+                "started": receipt.started,
+                "write_failed": receipt.write_failed,
                 "verified": receipt.verified,
                 "restored": receipt.restored,
+                "residual_risk": receipt.residual_risk,
             },
         )
 

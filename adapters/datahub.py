@@ -1,31 +1,35 @@
 """DataHub integration client.
 
-Reads license and lineage context through the coordinator-hosted MCP endpoint and
-performs reversible, ``license.``-scoped writeback through GMS.
+Reads license and lineage context through the coordinator-hosted MCP endpoint
+(see :mod:`adapters.mcp_client`) and performs reversible, ``license.``-scoped
+writeback through the DataHub SDK (see :mod:`adapters.catalog`).
 
 Two rules shape everything here:
 
 1. **Every write is namespace-guarded.** Five submissions share one DataHub
    instance. A write that cannot be proven to target a ``license.`` entity is
    refused before any request leaves the process.
-2. **Every write is reversible.** :meth:`DataHubClient.reversible_tag_writeback`
-   captures the prior aspect, writes, immediately re-reads to prove the write
-   landed, then restores the prior state. The demo proves writeback capability
-   without leaving the shared instance mutated.
+2. **Every write is reversible, and restoration is attempted whenever the write
+   may have landed** -- including when the verifying re-read itself raises. That
+   is the difference between leaving the shared instance clean and leaving a
+   stray tag behind because an exception took the short path out.
 
 The MCP endpoint comes from ``DATAHUB_MCP_URL``. Never hardcode a deployment
-port -- the coordinator runs two private pinned MCP workers and may move them.
+port -- the coordinator runs private pinned MCP workers and may move them.
 """
 
 from __future__ import annotations
 
-import json
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from typing import Any, Protocol
 
-import httpx
-
+from adapters.mcp_client import (
+    DEFAULT_MAX_HOPS,
+    DEFAULT_MAX_RESULTS,
+    McpError,
+    McpTransport,
+)
 from app.namespace import Namespace, NamespaceViolation, require_in_namespace
 
 
@@ -42,6 +46,11 @@ class DataHubUnavailable(DataHubError):
 #: before it produces a misleading empty impact analysis.
 REQUIRED_MCP_TOOLS = frozenset({"search", "get_entities", "get_lineage"})
 
+#: Custom properties every seeded entity must carry. Readiness verifies these:
+#: an entity missing ``artifact_class`` would classify as UNKNOWN and escalate,
+#: which is safe but indistinguishable from a genuinely unclassifiable artifact.
+REQUIRED_CUSTOM_PROPERTIES = frozenset({"artifact_class", "purposes"})
+
 
 @dataclass(frozen=True)
 class EntityContext:
@@ -55,9 +64,15 @@ class EntityContext:
     owners: tuple[str, ...] = ()
     description: str | None = None
     custom_properties: dict[str, str] = field(default_factory=dict)
+    #: False when the entity carries ``Status(removed=True)``. A soft-deleted
+    #: entity is not a usable catalog entry.
+    active: bool = True
 
     def has_tag(self, tag: str) -> bool:
         return tag in self.tags
+
+    def missing_properties(self) -> frozenset[str]:
+        return frozenset(REQUIRED_CUSTOM_PROPERTIES - set(self.custom_properties))
 
 
 @dataclass(frozen=True)
@@ -75,8 +90,17 @@ class LineageEdge:
 class WritebackReceipt:
     """Evidence that a reversible writeback ran end to end.
 
-    ``restored`` matters as much as ``verified``: a writeback that landed but did
-    not restore leaves the shared instance dirty, and the receipt has to say so.
+    The four flags are deliberately independent so the receipt can describe every
+    real outcome, including the awkward ones:
+
+    - ``started`` -- the write was attempted, so state may have changed.
+    - ``write_failed`` -- the write call itself raised.
+    - ``verified`` -- an immediate re-read observed the applied value.
+    - ``restored`` -- prior state was put back and confirmed.
+
+    A write that landed but whose verifying re-read raised is ``started=True,
+    verified=False, restored=True``. Collapsing that into a single success flag
+    would hide the fact that the instance was touched.
     """
 
     urn: str
@@ -84,8 +108,10 @@ class WritebackReceipt:
     applied_value: str
     prior_value: list[str]
     written_at: datetime
+    started: bool
     verified: bool
     restored: bool
+    write_failed: bool = False
     detail: str = ""
 
     @property
@@ -93,17 +119,24 @@ class WritebackReceipt:
         """Whether the write was proven *and* the instance was left as found."""
         return self.verified and self.restored
 
+    @property
+    def residual_risk(self) -> bool:
+        """Whether state may have been left behind on the shared instance."""
+        return self.started and not self.restored
+
 
 class DataHubClient(Protocol):
     """The surface the application depends on.
 
-    Kept narrow so the deterministic fake in :class:`FakeDataHubClient` is a real
-    substitute rather than a partial mock.
+    Kept narrow so the deterministic fake in :class:`adapters.fake_datahub.FakeDataHubClient`
+    is a real substitute rather than a partial mock.
     """
 
     def list_mcp_tools(self) -> frozenset[str]: ...
 
     def get_entity(self, urn: str) -> EntityContext | None: ...
+
+    def get_entities(self, urns: list[str]) -> dict[str, EntityContext]: ...
 
     def get_downstream_lineage(self, urn: str, max_depth: int = 5) -> list[LineageEdge]: ...
 
@@ -112,10 +145,10 @@ class DataHubClient(Protocol):
     def set_tags(self, urn: str, tags: list[str]) -> None: ...
 
 
-class HttpDataHubClient:
-    """Live client: MCP over Streamable HTTP for reads, GMS for writeback.
+class LiveDataHubClient:
+    """Live client: MCP for reads, DataHub SDK for writeback.
 
-    Constructed from settings so the endpoint is always configuration-driven.
+    Constructed from settings so endpoints are always configuration-driven.
     """
 
     def __init__(
@@ -125,124 +158,145 @@ class HttpDataHubClient:
         mcp_url: str,
         token: str,
         namespace: Namespace,
-        timeout: float = 15.0,
+        max_hops: int = DEFAULT_MAX_HOPS,
+        max_results: int = DEFAULT_MAX_RESULTS,
     ) -> None:
         if not gms_url:
             raise DataHubError("DATAHUB_GMS_URL is not configured")
-        if not mcp_url:
-            raise DataHubError("DATAHUB_MCP_URL is not configured")
         if not token:
             # Failing here rather than sending an unauthenticated request keeps a
             # missing token from surfacing later as a confusing empty result set.
             raise DataHubError("DATAHUB_TOKEN is not configured")
 
-        self._gms_url = gms_url.rstrip("/")
-        self._mcp_url = mcp_url
-        self._token = token
         self._namespace = namespace
-        self._timeout = timeout
+        self._max_hops = max_hops
+        self._max_results = max_results
+        self._transport = McpTransport(mcp_url, token)
+        self._catalog: Any = None
+        self._gms_url = gms_url
+        self._token = token
 
-    # -- transport ------------------------------------------------------
+    def _get_catalog(self):
+        from adapters.catalog import LiveCatalog
 
-    @property
-    def _headers(self) -> dict[str, str]:
-        return {
-            "Authorization": f"Bearer {self._token}",
-            "Content-Type": "application/json",
-            "Accept": "application/json, text/event-stream",
-        }
-
-    def _mcp_call(self, method: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        """Issue one JSON-RPC call against the MCP endpoint."""
-        payload = {"jsonrpc": "2.0", "id": 1, "method": method, "params": params or {}}
-        try:
-            response = httpx.post(
-                self._mcp_url, json=payload, headers=self._headers, timeout=self._timeout
-            )
-        except httpx.HTTPError as exc:
-            raise DataHubUnavailable(f"MCP endpoint unreachable: {exc}") from exc
-
-        if response.status_code != 200:
-            raise DataHubError(f"MCP returned HTTP {response.status_code}")
-
-        body = _parse_possibly_streamed(response.text)
-        if "error" in body:
-            raise DataHubError(f"MCP error: {body['error']}")
-        return body.get("result", {})
-
-    def _gms_get(self, path: str, params: dict[str, Any] | None = None) -> dict[str, Any]:
-        try:
-            response = httpx.get(
-                f"{self._gms_url}{path}",
-                params=params,
-                headers=self._headers,
-                timeout=self._timeout,
-            )
-        except httpx.HTTPError as exc:
-            raise DataHubUnavailable(f"GMS unreachable: {exc}") from exc
-        if response.status_code == 404:
-            return {}
-        if response.status_code >= 400:
-            raise DataHubError(f"GMS returned HTTP {response.status_code}")
-        return response.json()
+        if self._catalog is None:
+            self._catalog = LiveCatalog(self._gms_url, self._token, self._namespace)
+        return self._catalog
 
     # -- reads ----------------------------------------------------------
 
     def list_mcp_tools(self) -> frozenset[str]:
-        """Names of tools the MCP endpoint advertises."""
-        result = self._mcp_call("tools/list")
-        return frozenset(t.get("name", "") for t in result.get("tools", []))
+        try:
+            return self._transport.tool_names()
+        except McpError as exc:
+            raise DataHubUnavailable(str(exc)) from exc
+
+    def get_entities(self, urns: list[str]) -> dict[str, EntityContext]:
+        """Batch entity fetch.
+
+        ``get_entities`` takes a list, so one call replaces N. On a demo graph
+        this is the difference between 1 round trip and 12.
+        """
+        if not urns:
+            return {}
+        try:
+            payload = self._transport.call("get_entities", {"urns": list(urns)})
+        except McpError as exc:
+            raise DataHubUnavailable(str(exc)) from exc
+
+        contexts: dict[str, EntityContext] = {}
+        for raw in _iter_entities(payload):
+            urn = raw.get("urn")
+            if urn:
+                contexts[urn] = _to_entity_context(urn, raw)
+        return contexts
 
     def get_entity(self, urn: str) -> EntityContext | None:
-        result = self._mcp_call(
-            "tools/call", {"name": "get_entities", "arguments": {"urns": [urn]}}
-        )
-        entities = _extract_entities(result)
-        if not entities:
-            return None
-        return _to_entity_context(urn, entities[0])
+        return self.get_entities([urn]).get(urn)
 
-    def get_downstream_lineage(self, urn: str, max_depth: int = 5) -> list[LineageEdge]:
-        result = self._mcp_call(
-            "tools/call",
-            {
-                "name": "get_lineage",
-                "arguments": {"urn": urn, "direction": "DOWNSTREAM", "max_hops": max_depth},
-            },
-        )
-        return _to_lineage_edges(urn, result)
+    def get_downstream_lineage(self, urn: str, max_depth: int | None = None) -> list[LineageEdge]:
+        """Downstream lineage, with request shape taken from the advertised schema.
+
+        ``upstream=false`` is explicit: the default on some builds is upstream,
+        which would silently return ancestors and produce an empty impact set.
+        """
+        hops = min(max_depth or self._max_hops, self._max_hops)
+        try:
+            schema = self._transport.schema_for("get_lineage")
+            results = schema.clamp("max_results", self._max_results)
+            payload = self._transport.call(
+                "get_lineage",
+                {
+                    "urn": urn,
+                    "upstream": False,
+                    "max_hops": hops,
+                    "max_results": results,
+                },
+            )
+        except McpError as exc:
+            raise DataHubUnavailable(str(exc)) from exc
+
+        return _to_lineage_edges(urn, payload)
 
     def get_tags(self, urn: str) -> list[str]:
-        """Read the globalTags aspect. Used to capture prior state before a write."""
-        body = self._gms_get(f"/aspects/{_encode(urn)}", {"aspect": "globalTags", "version": 0})
-        return _extract_tag_names(body)
+        entity = self.get_entity(urn)
+        return list(entity.tags) if entity else []
 
     # -- writes ---------------------------------------------------------
+
+    def upsert_spec(self, spec) -> None:
+        """Materialize one complete catalog entry through the SDK.
+
+        Properties, active status, tags, domain, and lineage -- not just tags.
+        """
+        from adapters.catalog import CatalogError
+
+        try:
+            self._get_catalog().upsert(spec)
+        except CatalogError as exc:
+            raise DataHubError(str(exc)) from exc
+        except NamespaceViolation:
+            raise
+        except Exception as exc:
+            raise DataHubUnavailable(f"catalog upsert failed: {exc}") from exc
+
+    def set_status(self, urn: str, removed: bool) -> None:
+        """Soft-delete or restore. Namespace-guarded inside the catalog."""
+        from adapters.catalog import CatalogError
+
+        try:
+            self._get_catalog().set_status(urn, removed)
+        except CatalogError as exc:
+            raise DataHubError(str(exc)) from exc
+        except NamespaceViolation:
+            raise
+        except Exception as exc:
+            raise DataHubUnavailable(f"status change failed: {exc}") from exc
 
     def set_tags(self, urn: str, tags: list[str]) -> None:
         """Replace the globalTags aspect. Namespace-guarded."""
         require_in_namespace(urn, self._namespace, operation="set_tags")
 
-        aspect = {"tags": [{"tag": f"urn:li:tag:{t}"} for t in tags]}
-        proposal = {
-            "proposal": {
-                "entityUrn": urn,
-                "aspectName": "globalTags",
-                "changeType": "UPSERT",
-                "aspect": {"value": json.dumps(aspect), "contentType": "application/json"},
-            }
-        }
+        from datahub.emitter.mcp import MetadataChangeProposalWrapper
+        from datahub.metadata.schema_classes import GlobalTagsClass, TagAssociationClass
+
+        from adapters.catalog import CatalogError, tag_urn
+
         try:
-            response = httpx.post(
-                f"{self._gms_url}/aspects?action=ingestProposal",
-                json=proposal,
-                headers=self._headers,
-                timeout=self._timeout,
+            self._get_catalog().emit(
+                [
+                    MetadataChangeProposalWrapper(
+                        entityUrn=urn,
+                        aspect=GlobalTagsClass(
+                            tags=[TagAssociationClass(tag=tag_urn(t)) for t in tags]
+                        ),
+                    )
+                ]
             )
-        except httpx.HTTPError as exc:
-            raise DataHubUnavailable(f"GMS unreachable during write: {exc}") from exc
-        if response.status_code >= 400:
-            raise DataHubError(f"Writeback failed with HTTP {response.status_code}")
+        except CatalogError as exc:
+            raise DataHubError(str(exc)) from exc
+        except Exception as exc:
+            raise DataHubUnavailable(f"tag writeback failed: {exc}") from exc
 
 
 def reversible_tag_writeback(
@@ -253,45 +307,57 @@ def reversible_tag_writeback(
 ) -> WritebackReceipt:
     """Apply a tag, prove it landed, then restore the prior state.
 
-    This is the supported-writeback demonstration. It is deliberately reversible:
-    the shared instance is left exactly as found, so the capability can be proven
-    repeatedly without accumulating demo residue.
+    Restoration runs in ``finally`` from the moment the write is attempted. If the
+    verifying re-read raises, the write may still have landed, so rolling back is
+    exactly as necessary as it is on the happy path -- and skipping it would leave
+    a stray tag on an instance shared with four other submissions.
 
-    Restoration runs even when verification fails -- a write that landed but could
-    not be confirmed still has to be rolled back, and the receipt records both
-    outcomes separately.
+    The receipt records ``started``, ``write_failed``, ``verified``, and
+    ``restored`` independently, so an unrestored write can never be presented as a
+    clean one.
 
     Raises:
-        NamespaceViolation: if ``urn`` is outside this project's allocation.
+        NamespaceViolation: if ``urn`` is outside this project's allocation. Raised
+            before anything is attempted, so no state changes.
     """
     require_in_namespace(urn, namespace, operation="reversible_tag_writeback")
 
     prior = list(client.get_tags(urn))
     applied = sorted(set(prior) | {tag})
 
-    client.set_tags(urn, applied)
-
-    # Immediate re-read: the write is not evidence until DataHub reports it back.
-    observed = list(client.get_tags(urn))
-    verified = tag in observed
-
+    started = False
+    write_failed = False
+    verified = False
     restored = False
-    detail = ""
-    try:
-        client.set_tags(urn, prior)
-        after_restore = list(client.get_tags(urn))
-        restored = sorted(after_restore) == sorted(prior)
-        if not restored:
-            detail = f"restore left tags as {sorted(after_restore)}, expected {sorted(prior)}"
-    except (DataHubError, NamespaceViolation) as exc:
-        # Never swallow this. An unrestored write is residual state on a shared
-        # instance and the receipt must carry it.
-        detail = f"restore failed: {exc}"
+    notes: list[str] = []
 
-    if verified and not detail:
-        detail = "tag applied, re-read confirmed, prior state restored"
-    elif not verified and not detail:
-        detail = f"re-read did not observe {tag!r}; tags were {sorted(observed)}"
+    try:
+        started = True
+        client.set_tags(urn, applied)
+
+        observed = list(client.get_tags(urn))
+        verified = tag in observed
+        if not verified:
+            notes.append(f"re-read did not observe {tag!r}; tags were {sorted(observed)}")
+    except (DataHubError, NamespaceViolation) as exc:
+        # The write or the verifying re-read failed. Either way state may have
+        # changed, so restoration below still runs.
+        write_failed = True
+        notes.append(f"write or verification failed: {exc}")
+    finally:
+        try:
+            client.set_tags(urn, prior)
+            after = list(client.get_tags(urn))
+            restored = sorted(after) == sorted(prior)
+            if not restored:
+                notes.append(f"restore left tags as {sorted(after)}, expected {sorted(prior)}")
+        except (DataHubError, NamespaceViolation) as exc:
+            notes.append(f"restore failed: {exc}")
+
+    if verified and restored and not notes:
+        notes.append("tag applied, re-read confirmed, prior state restored")
+    if started and not restored:
+        notes.append("RESIDUAL: shared instance may retain this write")
 
     return WritebackReceipt(
         urn=urn,
@@ -299,108 +365,76 @@ def reversible_tag_writeback(
         applied_value=tag,
         prior_value=prior,
         written_at=datetime.now(UTC),
+        started=started,
         verified=verified,
         restored=restored,
-        detail=detail,
+        write_failed=write_failed,
+        detail="; ".join(notes),
     )
 
 
 # -- parsing helpers ----------------------------------------------------
 
 
-def _parse_possibly_streamed(text: str) -> dict[str, Any]:
-    """Parse a JSON-RPC body that may arrive as an SSE stream.
-
-    Streamable HTTP may return ``text/event-stream``; the useful payload is the
-    last ``data:`` frame.
-    """
-    stripped = text.strip()
-    if not stripped:
-        raise DataHubError("MCP returned an empty body")
-
-    if stripped.startswith("{"):
-        try:
-            return json.loads(stripped)
-        except json.JSONDecodeError as exc:
-            raise DataHubError(f"MCP returned unparseable JSON: {exc}") from exc
-
-    frames = [
-        line[len("data:") :].strip()
-        for line in stripped.splitlines()
-        if line.startswith("data:")
-    ]
-    for frame in reversed(frames):
-        try:
-            return json.loads(frame)
-        except json.JSONDecodeError:
-            continue
-    raise DataHubError("MCP stream contained no parseable data frame")
-
-
-def _extract_entities(result: dict[str, Any]) -> list[dict[str, Any]]:
-    """Pull entity dicts out of an MCP tool result.
-
-    MCP wraps tool output in a content envelope; the payload may be a JSON string
-    inside a text block or already structured.
-    """
-    if "entities" in result:
-        return list(result["entities"])
-
-    for block in result.get("content", []):
-        if block.get("type") != "text":
-            continue
-        try:
-            parsed = json.loads(block.get("text", ""))
-        except json.JSONDecodeError:
-            continue
-        if isinstance(parsed, dict) and "entities" in parsed:
-            return list(parsed["entities"])
-        if isinstance(parsed, list):
-            return parsed
+def _iter_entities(payload: Any) -> list[dict[str, Any]]:
+    """Normalize the several shapes an entity payload arrives in."""
+    if payload is None:
+        return []
+    if isinstance(payload, dict):
+        for key in ("entities", "results", "data"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                return [e for e in value if isinstance(e, dict)]
+        if "urn" in payload:
+            return [payload]
+        return []
+    if isinstance(payload, list):
+        return [e for e in payload if isinstance(e, dict)]
     return []
 
 
 def _to_entity_context(urn: str, raw: dict[str, Any]) -> EntityContext:
     tags = raw.get("tags") or []
+    properties = raw.get("customProperties") or raw.get("custom_properties") or {}
+    status = raw.get("status") or {}
+    removed = status.get("removed") if isinstance(status, dict) else raw.get("removed")
+
     return EntityContext(
         urn=raw.get("urn", urn),
         entity_type=raw.get("entityType", raw.get("type", "unknown")),
         name=raw.get("name", ""),
         tags=tuple(_tag_name(t) for t in tags),
-        domain=raw.get("domain"),
-        owners=tuple(raw.get("owners") or ()),
+        domain=_domain_name(raw.get("domain")),
+        owners=tuple(str(o) for o in (raw.get("owners") or ())),
         description=raw.get("description"),
-        custom_properties=dict(raw.get("customProperties") or {}),
+        custom_properties={str(k): str(v) for k, v in dict(properties).items()},
+        active=not bool(removed),
     )
 
 
-def _to_lineage_edges(source_urn: str, result: dict[str, Any]) -> list[LineageEdge]:
-    entries = result.get("relationships")
-    if entries is None:
-        for block in result.get("content", []):
-            if block.get("type") != "text":
-                continue
-            try:
-                parsed = json.loads(block.get("text", ""))
-            except json.JSONDecodeError:
-                continue
-            if isinstance(parsed, dict) and "relationships" in parsed:
-                entries = parsed["relationships"]
+def _to_lineage_edges(source_urn: str, payload: Any) -> list[LineageEdge]:
+    entries: list[dict[str, Any]] = []
+    if isinstance(payload, dict):
+        for key in ("relationships", "entities", "results", "lineage"):
+            value = payload.get(key)
+            if isinstance(value, list):
+                entries = [e for e in value if isinstance(e, dict)]
                 break
-    entries = entries or []
+    elif isinstance(payload, list):
+        entries = [e for e in payload if isinstance(e, dict)]
 
     edges: list[LineageEdge] = []
     for entry in entries:
-        downstream = entry.get("urn") or entry.get("entity")
+        downstream = entry.get("urn") or entry.get("entity") or entry.get("downstream")
         if not downstream:
             continue
         edges.append(
             LineageEdge(
-                upstream_urn=entry.get("via", source_urn),
-                downstream_urn=downstream,
+                upstream_urn=entry.get("via") or entry.get("upstream") or source_urn,
+                downstream_urn=str(downstream),
                 # DataHub can report a relationship whose entity it cannot resolve.
                 # Treating that as complete would manufacture a false all-clear.
-                resolved=entry.get("resolved", True),
+                resolved=bool(entry.get("resolved", True)),
             )
         )
     return edges
@@ -414,21 +448,36 @@ def _tag_name(raw: Any) -> str:
     return text.rsplit(":", 1)[-1] if text.startswith("urn:li:tag:") else text
 
 
-def _extract_tag_names(body: dict[str, Any]) -> list[str]:
-    aspect = body.get("aspect") or {}
-    value = aspect.get("value")
-    if isinstance(value, str):
-        try:
-            value = json.loads(value)
-        except json.JSONDecodeError:
-            return []
-    if not isinstance(value, dict):
-        value = aspect
-    tags = value.get("tags") or []
-    return [_tag_name(t) for t in tags]
+def _domain_name(raw: Any) -> str | None:
+    """Normalize a domain reference to a comparable name."""
+    if raw is None:
+        return None
+    if isinstance(raw, dict):
+        for key in ("name", "urn", "id"):
+            value = raw.get(key)
+            if value:
+                return str(value)
+        return None
+    if isinstance(raw, list):
+        return _domain_name(raw[0]) if raw else None
+    return str(raw)
 
 
 def _encode(urn: str) -> str:
     from urllib.parse import quote
 
     return quote(urn, safe="")
+
+
+__all__ = [
+    "REQUIRED_CUSTOM_PROPERTIES",
+    "REQUIRED_MCP_TOOLS",
+    "DataHubClient",
+    "DataHubError",
+    "DataHubUnavailable",
+    "EntityContext",
+    "LineageEdge",
+    "LiveDataHubClient",
+    "WritebackReceipt",
+    "reversible_tag_writeback",
+]

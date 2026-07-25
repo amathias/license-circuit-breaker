@@ -202,7 +202,7 @@
   ],
   "event": {
     "approver": null,
-    "effective_at": "2026-07-25T20:28:53.451037Z",
+    "effective_at": "2026-07-25T21:45:58.313946Z",
     "event_id": "evt-lcb-demo-001",
     "evidence_ref": null,
     "new": {
@@ -225,14 +225,14 @@
       "license_id": "PARTNER-2026-01",
       "name": "Partner review feed agreement",
       "permitted_purposes": [
+        "training",
         "retrieval",
-        "analytics",
-        "training"
+        "analytics"
       ],
       "state": "approved"
     },
     "reason": "Partner revoked training and retrieval rights effective immediately",
-    "recorded_at": "2026-07-25T20:28:53.451113Z",
+    "recorded_at": "2026-07-25T21:45:58.314056Z",
     "replacement_source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)",
     "requester": "governance@example.com",
     "source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",

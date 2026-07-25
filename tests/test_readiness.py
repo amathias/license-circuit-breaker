@@ -28,8 +28,12 @@ NS = Namespace(
 
 @pytest.fixture
 def settings(tmp_path) -> Settings:
+    # Readiness no longer creates the directory -- it only checks it -- so the
+    # fixture must create it the way application startup does.
+    state = tmp_path / "state"
+    state.mkdir(parents=True, exist_ok=True)
     return Settings(
-        APP_STATE_DIR=str(tmp_path / "state"),
+        APP_STATE_DIR=str(state),
         DATAHUB_GMS_URL="http://localhost:8080",
         DATAHUB_MCP_URL="http://localhost:8000/mcp",
         DATAHUB_TOKEN="fixture-token-not-a-real-secret",
@@ -62,7 +66,9 @@ class TestReadyPath:
             "datahub_token",
             "datahub_endpoints",
             "mcp_capabilities",
-            "project_entities",
+            "project_controls",
+            "entity_coverage",
+            "fixture_lineage",
         } <= names
 
 
@@ -103,14 +109,14 @@ class TestFailClosed:
         empty = FakeDataHubClient(namespace=NS)
         report = _evaluate(settings, empty)
         assert not report.ready
-        assert any(c.name == "project_entities" for c in report.failures())
+        assert any(c.name in ("project_controls", "entity_coverage") for c in report.failures())
 
     def test_sentinel_without_project_tag_is_not_ready(self, settings):
         client = FakeDataHubClient(namespace=NS)
         client.add_entity(SENTINEL_URN, tags=("some-other-tag",))
         report = _evaluate(settings, client)
         assert not report.ready
-        assert any(c.name == "project_entities" for c in report.failures())
+        assert any(c.name in ("project_controls", "entity_coverage") for c in report.failures())
 
     def test_sentinel_in_a_foreign_domain_is_not_ready(self, settings):
         client = FakeDataHubClient(namespace=NS)
@@ -128,7 +134,7 @@ class TestFailClosed:
         assert not report.ready
         # Unrunnable checks must be reported failed, never skipped.
         assert any(c.name == "mcp_capabilities" and not c.passed for c in report.checks)
-        assert any(c.name == "project_entities" and not c.passed for c in report.checks)
+        assert any(c.name == "project_controls" and not c.passed for c in report.checks)
 
     def test_absent_client_factory_is_not_ready(self, settings):
         report = evaluate_readiness(settings, load_policy=get_policy, client_factory=None)

@@ -1,7 +1,7 @@
 {
   "event_id": "evt-lcb-demo-001",
   "version": 1,
-  "effective_at": "2026-07-25T20:29:06.575573Z",
+  "effective_at": "2026-07-25T21:47:45.761965Z",
   "source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
   "prior": {
     "license_id": "PARTNER-2026-01",
@@ -34,5 +34,5 @@
   "replacement_source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)",
   "requester": "governance@example.com",
   "approver": null,
-  "recorded_at": "2026-07-25T20:29:06.575765Z"
+  "recorded_at": "2026-07-25T21:47:45.764097Z"
 }

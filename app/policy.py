@@ -28,7 +28,18 @@ from app.rights import (
     RightsEvent,
 )
 
-DEFAULT_RULES_PATH = Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
+
+def _default_rules_path() -> Path:
+    """Locate the rule table in a source checkout or an installed archive."""
+    try:
+        from policy import rules_path
+
+        return rules_path()
+    except ImportError:  # pragma: no cover - source layout fallback
+        return Path(__file__).resolve().parent.parent / "policy" / "rules.yaml"
+
+
+DEFAULT_RULES_PATH = _default_rules_path()
 
 
 class PolicyError(Exception):

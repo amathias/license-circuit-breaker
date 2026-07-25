@@ -11,6 +11,7 @@ that writes would corrupt other projects' demos every time the proxy polled it.
 from __future__ import annotations
 
 import time
+from contextlib import asynccontextmanager
 from typing import Any, Literal
 
 from fastapi import FastAPI
@@ -23,6 +24,18 @@ from app.readiness import evaluate_readiness
 
 STARTED_AT = time.monotonic()
 
+
+@asynccontextmanager
+async def lifespan(_: FastAPI):
+    """Create the state directory once at startup.
+
+    Readiness must not mutate anything, so it can only *check* the directory --
+    creating it is startup's job.
+    """
+    get_settings().ensure_state_dir()
+    yield
+
+
 app = FastAPI(
     title="License Circuit Breaker",
     description=(
@@ -30,6 +43,7 @@ app = FastAPI(
         "operations; does not provide legal advice."
     ),
     version="0.1.0",
+    lifespan=lifespan,
 )
 
 
