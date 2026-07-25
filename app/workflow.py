@@ -13,6 +13,8 @@ their own approval gate in the next milestone.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from dataclasses import dataclass
 from datetime import UTC, datetime
 
@@ -26,7 +28,7 @@ from app.context import ContextValidation, discover_descendants, validate_entity
 from app.namespace import Namespace, NamespaceViolation, require_in_namespace
 from app.policy import PolicyTable, evaluate_all
 from app.receipts import ReceiptLedger
-from app.rights import ImpactDecision, RightsEvent
+from app.rights import DESTRUCTIVE_ACTIONS, ImpactDecision, RightsEvent
 
 #: Tag applied during the reversible writeback demonstration.
 REVOCATION_TAG = "license-revocation-under-review"
@@ -65,6 +67,86 @@ class ImpactPlan:
         specific false negative this product exists to prevent.
         """
         return not self.destructive and not self.escalations
+
+    def plan_hash(self) -> str:
+        """Stable fingerprint of exactly what this plan would enforce.
+
+        Covers the rights event's content plus every decision's target, actions,
+        rules, and priority -- and nothing else. ``generated_at`` is deliberately
+        excluded, so regenerating the same plan from the same graph produces the
+        same hash and an existing approval still applies.
+
+        This is the value an approval binds to. Any change to what would be
+        enforced changes the hash, which invalidates the approval rather than
+        letting a re-planned scope ride on an old sign-off.
+        """
+        payload = {
+            "event": self.event.content_hash(),
+            "decisions": [
+                {
+                    "urn": decision.descendant_urn,
+                    "actions": [a.value for a in decision.actions],
+                    "rule_ids": list(decision.rule_ids),
+                    "priority": decision.priority,
+                }
+                for decision in self.decisions
+            ],
+        }
+        encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
+
+    def enforcement_scope(self) -> dict[str, list[str]]:
+        """The destructive actions this plan would perform, per descendant.
+
+        Only these need approval and only these reach an adapter. ``no_action``
+        and ``escalate`` are outcomes, not operations.
+        """
+        scope: dict[str, list[str]] = {}
+        for decision in self.decisions:
+            actions = [a.value for a in decision.actions if a in DESTRUCTIVE_ACTIONS]
+            if actions:
+                scope[decision.descendant_urn] = actions
+        return scope
+
+    def to_dict(self) -> dict:
+        """Serializable form, for persistence and the judge console."""
+        return {
+            "plan_hash": self.plan_hash(),
+            "generated_at": self.generated_at.isoformat(),
+            "event": json.loads(self.event.model_dump_json()),
+            "event_hash": self.event.content_hash(),
+            "all_clear": self.all_clear,
+            "requires_approval": self.requires_approval,
+            "enforcement_scope": self.enforcement_scope(),
+            "decisions": [json.loads(d.model_dump_json()) for d in self.decisions],
+            "validations": [
+                {
+                    "urn": v.urn,
+                    "present": v.present,
+                    "in_namespace": v.in_namespace,
+                    "has_project_tag": v.has_project_tag,
+                    "in_project_domain": v.in_project_domain,
+                    "usable": v.usable,
+                    "issues": list(v.issues),
+                }
+                for v in self.validations
+            ],
+        }
+
+    def decision_for(self, urn: str) -> ImpactDecision | None:
+        for decision in self.decisions:
+            if decision.descendant_urn == urn:
+                return decision
+        return None
+
+    @property
+    def escalated_urns(self) -> tuple[str, ...]:
+        """Descendants whose impact could not be resolved.
+
+        These carry residual exposure by construction: an escalation means the
+        evidence was insufficient to act, not that there was nothing to do.
+        """
+        return tuple(d.descendant_urn for d in self.escalations)
 
 
 def build_impact_plan(
