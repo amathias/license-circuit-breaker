@@ -1,9 +1,12 @@
-"""Command-line entry points for seed, reset, and the vertical slice.
+"""Command-line entry points for the demo lifecycle.
 
-    python -m demo.cli seed
-    python -m demo.cli reset
-    python -m demo.cli slice      # read context, plan, reversible writeback
-    python -m demo.cli verify     # verify the receipt ledger's hash chain
+    python -m demo.cli seed              # create the DataHub catalog entries
+    python -m demo.cli reset             # soft-remove them again
+    python -m demo.cli estate build      # build the local data estate
+    python -m demo.cli estate status     # report what the estate is serving
+    python -m demo.cli probe             # query the API, index, and export
+    python -m demo.cli slice             # read context, plan, reversible writeback
+    python -m demo.cli verify            # verify the receipt ledger's hash chain
 
 Against ``APP_ENV=offline`` these run on the in-memory fake and everything they
 produce is marked ``simulated``. Only a run against the shared DataHub instance
@@ -23,8 +26,10 @@ from app.namespace import NamespaceViolation
 from app.receipts import ReceiptLedger
 from app.rights import License, Purpose, RightsEvent, RightsState
 from app.workflow import build_impact_plan, perform_reversible_writeback
+from demo.estate import EstateError, EstatePaths, build_estate, estate_status, reset_estate
 from demo.graph import REPLACEMENT_SOURCE, SOURCE
 from demo.seed import SeedError, VerificationError, reset, restore, seed
+from demo.serving import ServingRefused, fetch_export, predict, search
 
 
 def demo_rights_event() -> RightsEvent:
@@ -186,6 +191,70 @@ def cmd_slice(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_estate(args: argparse.Namespace) -> int:
+    """Build, inspect, or discard the local data estate."""
+    settings = get_settings()
+    paths = EstatePaths.under(settings.ensure_state_dir())
+
+    try:
+        if args.estate_action == "build":
+            result = build_estate(paths)
+            print(f"Estate {'rebuilt' if result.rebuilt else 'built'} at {result.root}")
+            print(f"  {result.describe()}")
+            return 0
+
+        if args.estate_action == "reset":
+            removed = reset_estate(paths)
+            print(f"Estate {'removed' if removed else 'was already absent'} at {paths.root}")
+            return 0
+
+        print(json.dumps(estate_status(paths), indent=2, sort_keys=True))
+        return 0
+    except EstateError as exc:
+        print(f"Estate operation failed: {exc}", file=sys.stderr)
+        return 7
+
+
+def cmd_probe(args: argparse.Namespace) -> int:
+    """Query every governed local artifact and report what it is serving.
+
+    This is the before/after probe the demo runs on both sides of containment.
+    It exits non-zero only when the estate is unusable -- a refusal is a *result*,
+    not an error, because after containment refusal is the expected answer.
+    """
+    settings = get_settings()
+    paths = EstatePaths.under(settings.ensure_state_dir())
+
+    print(f"[probe] estate: {paths.root}")
+
+    try:
+        prediction = predict(paths, args.text)
+        print(f"  predict: {prediction.to_dict()}")
+    except ServingRefused as exc:
+        print(f"  predict: REFUSED -- {exc.reason}")
+    except EstateError as exc:
+        print(f"  predict: UNAVAILABLE -- {exc}", file=sys.stderr)
+        return 7
+
+    try:
+        hits = search(paths, args.query)
+        if hits:
+            for hit in hits:
+                print(f"  search:  {hit.review_id} ({hit.source_feed}) {hit.text[:48]!r}")
+        else:
+            print("  search:  no matching documents (index is empty or purged)")
+    except ServingRefused as exc:
+        print(f"  search:  REFUSED -- {exc.reason}")
+
+    try:
+        lines = fetch_export(paths).splitlines()
+        print(f"  export:  {len(lines) - 1} rows readable at the published path")
+    except ServingRefused as exc:
+        print(f"  export:  REFUSED -- {exc.reason}")
+
+    return 0
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     settings = get_settings()
     ledger = ReceiptLedger(settings.ensure_state_dir())
@@ -203,6 +272,23 @@ def main(argv: list[str] | None = None) -> int:
         func=cmd_reset
     )
     sub.add_parser("restore", help="reverse a soft reset").set_defaults(func=cmd_restore)
+    estate_parser = sub.add_parser("estate", help="manage the local data estate")
+    estate_parser.add_argument(
+        "estate_action",
+        nargs="?",
+        default="status",
+        choices=("build", "status", "reset"),
+        help="default: status",
+    )
+    estate_parser.set_defaults(func=cmd_estate)
+
+    probe_parser = sub.add_parser("probe", help="query the API, index, and export")
+    probe_parser.add_argument(
+        "--text", default="the battery lasts all weekend and charges fast"
+    )
+    probe_parser.add_argument("--query", default="battery charge")
+    probe_parser.set_defaults(func=cmd_probe)
+
     slice_parser = sub.add_parser("slice", help="run the vertical slice")
     slice_parser.add_argument("--output", help="write the plan to a JSON file")
     slice_parser.set_defaults(func=cmd_slice)
