@@ -355,6 +355,51 @@ def _rebuild_derived(connection, source_table: str, source_feed: str) -> None:
     )
 
 
+def rebuild_derived_from(paths: EstatePaths, source_table: str, source_feed: str) -> int:
+    """Rebuild the derived warehouse tables from a different feed.
+
+    This is what a ``rebuild`` containment action does: it does not relabel or
+    filter the existing rows, it regenerates them from an approved source, so
+    the result provably contains no partner identifiers.
+
+    Returns the number of rows the rebuild produced.
+    """
+    connection = _connect(paths)
+    try:
+        existing = {name for (name,) in connection.execute("SHOW TABLES").fetchall()}
+        if source_table not in existing:
+            raise EstateError(f"cannot rebuild from {source_table!r}: table does not exist")
+        _rebuild_derived(connection, source_table=source_table, source_feed=source_feed)
+        return int(connection.execute("SELECT COUNT(*) FROM normalized").fetchone()[0])
+    finally:
+        connection.close()
+
+
+def purge_table(paths: EstatePaths, table: str) -> int:
+    """Delete every row from one warehouse table, keeping its schema.
+
+    Returns the number of rows removed. Dropping the table instead would make a
+    purged artifact indistinguishable from one that never existed, which the
+    verification engine needs to tell apart.
+    """
+    connection = _connect(paths)
+    try:
+        existing = {name for (name,) in connection.execute("SHOW TABLES").fetchall()}
+        if table not in existing:
+            raise EstateError(f"cannot purge {table!r}: table does not exist")
+        before = int(connection.execute(f"SELECT COUNT(*) FROM {table}").fetchone()[0])  # noqa: S608
+        connection.execute(f"DELETE FROM {table}")  # noqa: S608
+        return before
+    finally:
+        connection.close()
+
+
+def table_row_ids(paths: EstatePaths, table: str) -> list[str]:
+    """Every ``review_id`` in one table, sorted. Empty when the table has none."""
+    rows = read_table(paths, table)
+    return sorted(str(row["review_id"]) for row in rows if "review_id" in row)
+
+
 def read_table(paths: EstatePaths, table: str) -> list[dict[str, Any]]:
     """Read one warehouse table as dictionaries.
 
@@ -449,6 +494,7 @@ def train_model(
     source_urn: str,
     source_table: str,
     version: str,
+    activate: bool = True,
 ) -> dict[str, Any]:
     """Train one classifier version and write its training manifest.
 
@@ -456,6 +502,11 @@ def train_model(
     contributed. That is the evidence a retrain is verified against: an active
     model whose manifest still cites the revoked source has not been contained,
     however many times an adapter reported success.
+
+    ``activate`` is False when a retrain must not change what is being served.
+    Retrain and replace are separate policy actions and separate approvals; a
+    retrain that silently swapped the served model would enforce a decision the
+    approver never made.
     """
     rows = read_table(paths, source_table)
     if not rows:
@@ -504,8 +555,23 @@ def train_model(
         "content_hash": _hash(row_ids),
     }
     _write_json(version_dir / "training_manifest.json", manifest)
-    _write_json(paths.model_root(name) / "active.json", {"active_version": version})
+    if activate:
+        activate_version(paths, name, version)
     return manifest
+
+
+def activate_version(paths: EstatePaths, name: str, version: str) -> bool:
+    """Point a model at one of its trained versions. Returns True when changed.
+
+    Raises:
+        EstateError: if that version was never trained. Serving a version that
+            does not exist would take the endpoint down while reporting success.
+    """
+    if not (paths.model_root(name) / version / "model.json").exists():
+        raise EstateError(f"model {name!r} has no trained version {version!r} to activate")
+    changed = active_version(paths, name) != version
+    _write_json(paths.model_root(name) / "active.json", {"active_version": version})
+    return changed
 
 
 def active_version(paths: EstatePaths, name: str) -> str | None:
@@ -740,6 +806,7 @@ __all__ = [
     "EstateError",
     "EstatePaths",
     "ServingControl",
+    "activate_version",
     "active_version",
     "build_estate",
     "build_export",
@@ -751,10 +818,13 @@ __all__ = [
     "load_index",
     "load_scorer",
     "model_versions",
+    "purge_table",
     "quarantined_export_path",
     "read_table",
+    "rebuild_derived_from",
     "reset_estate",
     "resolve_artifact",
+    "table_row_ids",
     "train_model",
     "training_manifest",
 ]
