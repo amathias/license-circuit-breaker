@@ -13,7 +13,7 @@ from __future__ import annotations
 
 import hashlib
 import json
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from enum import StrEnum
 from typing import Literal
 
@@ -143,7 +143,7 @@ class RightsEvent(BaseModel):
 
     requester: str
     approver: str | None = None
-    recorded_at: datetime = Field(default_factory=lambda: datetime.now(timezone.utc))
+    recorded_at: datetime = Field(default_factory=lambda: datetime.now(UTC))
 
     @field_validator("effective_at", "recorded_at")
     @classmethod
@@ -221,6 +221,14 @@ class Descendant(BaseModel):
         default_factory=frozenset, description="What this artifact currently does with the data"
     )
     rebuildable_from_replacement: bool = False
+    contaminated_upstream: bool = Field(
+        default=False,
+        description=(
+            "True when an ancestor on a lineage path uses a revoked purpose. Content "
+            "derived from revoked data stays in scope even when this artifact's own "
+            "declared purpose was never revoked."
+        ),
+    )
 
     @property
     def lineage_complete(self) -> bool:

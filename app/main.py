@@ -13,12 +13,13 @@ from __future__ import annotations
 import time
 from typing import Any, Literal
 
-import httpx
 from fastapi import FastAPI
 from pydantic import BaseModel
 
-from app.config import Settings, get_settings
+from app.clients import build_client, is_offline
+from app.config import get_settings
 from app.policy import get_policy
+from app.readiness import evaluate_readiness
 
 STARTED_AT = time.monotonic()
 
@@ -50,6 +51,9 @@ class ReadinessResponse(BaseModel):
     project_slug: str
     checks: list[CheckResult]
     namespace: dict[str, str]
+    #: True when running against the in-memory fake. Judges and the coordinator
+    #: must be able to tell simulated runs from live ones at a glance.
+    simulated: bool
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -64,82 +68,33 @@ def health() -> HealthResponse:
     )
 
 
-def _check_state_dir(settings: Settings) -> CheckResult:
-    try:
-        state_dir = settings.ensure_state_dir()
-        probe = state_dir / ".readiness"
-        probe.write_text("ok", encoding="utf-8")
-        probe.unlink()
-        return CheckResult(name="state_dir", passed=True, detail=f"writable at {state_dir}")
-    except OSError as exc:
-        return CheckResult(name="state_dir", passed=False, detail=f"not writable: {exc}")
-
-
-def _check_policy() -> CheckResult:
-    try:
-        table = get_policy()
-        return CheckResult(
-            name="policy_table",
-            passed=True,
-            detail=f"v{table.version}, {len(table.rules)} rules loaded",
-        )
-    except Exception as exc:  # noqa: BLE001 - readiness reports, never raises
-        return CheckResult(name="policy_table", passed=False, detail=str(exc))
-
-
-def _check_namespace(settings: Settings) -> CheckResult:
-    try:
-        namespace = settings.namespace
-        return CheckResult(
-            name="namespace_guard",
-            passed=True,
-            detail=f"enforcing prefix {namespace.urn_prefix!r}",
-        )
-    except ValueError as exc:
-        # A misconfigured namespace is worse than an absent one: it would let
-        # writes reach another project's entities.
-        return CheckResult(name="namespace_guard", passed=False, detail=str(exc))
-
-
-def _check_datahub(settings: Settings) -> CheckResult:
-    """Read-only reachability probe against DataHub GMS."""
-    if not settings.datahub_configured:
-        return CheckResult(
-            name="datahub",
-            passed=False,
-            detail="DATAHUB_GMS_URL/DATAHUB_TOKEN not configured",
-        )
-    url = settings.datahub_gms_url.rstrip("/") + "/config"
-    try:
-        response = httpx.get(url, timeout=5.0)
-        if response.status_code == 200:
-            return CheckResult(name="datahub", passed=True, detail=f"GMS reachable at {url}")
-        return CheckResult(
-            name="datahub", passed=False, detail=f"GMS returned HTTP {response.status_code}"
-        )
-    except httpx.HTTPError as exc:
-        return CheckResult(name="datahub", passed=False, detail=f"GMS unreachable: {exc}")
-
-
 @app.get("/api/readiness", response_model=ReadinessResponse)
 def readiness() -> ReadinessResponse:
-    """Verify local state and DataHub connectivity without mutating shared state."""
+    """Fail-closed readiness. Read-only; never mutates shared state.
+
+    Reports ready only with positive proof of a token, the required MCP tools, the
+    project domain and tag, and readable ``license.`` entities. A reachable GMS is
+    not sufficient -- an empty or foreign instance would otherwise look healthy
+    while producing an impact analysis indistinguishable from an all-clear.
+    """
     settings = get_settings()
-    checks = [
-        _check_state_dir(settings),
-        _check_policy(),
-        _check_namespace(settings),
-        _check_datahub(settings),
-    ]
+    report = evaluate_readiness(
+        settings,
+        load_policy=get_policy,
+        client_factory=lambda: build_client(settings),
+    )
     return ReadinessResponse(
-        status="ready" if all(c.passed for c in checks) else "degraded",
+        status=report.status,
         project_slug=settings.project_slug,
-        checks=checks,
+        checks=[
+            CheckResult(name=c.name, passed=c.passed, detail=c.detail) for c in report.checks
+        ],
         namespace={
             "urn_prefix": settings.datahub_urn_prefix,
             "project_tag": settings.datahub_project_tag,
             "domain": settings.datahub_domain,
         },
+        simulated=is_offline(settings),
     )
 
 

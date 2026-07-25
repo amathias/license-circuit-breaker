@@ -11,10 +11,11 @@ record, but it cannot decide enforcement.
 
 from __future__ import annotations
 
+from collections.abc import Mapping
 from dataclasses import dataclass
 from functools import lru_cache
 from pathlib import Path
-from typing import Any, Mapping
+from typing import Any
 
 import yaml
 
@@ -139,16 +140,31 @@ def get_policy() -> PolicyTable:
 
 
 def is_affected(event: RightsEvent, descendant: Descendant) -> bool:
-    """Whether the descendant uses a purpose the event removed.
+    """Whether this descendant is in scope for containment.
 
-    A descendant of a revoked source is not automatically in scope. An analytics
-    table downstream of a feed that lost only its *training* right keeps operating;
-    proving that precision is what separates this from a blunt subtree delete.
+    In scope when either holds:
+
+    - the artifact itself uses a purpose the event removed; or
+    - an ancestor on a lineage path does, so this artifact's content is *derived*
+      from revoked data even though its own declared purpose was never revoked.
+
+    The second clause matters more than it looks. A prediction API declares
+    ``serving`` and a CSV export declares ``export`` -- neither purpose is revoked
+    when a feed loses its training right, yet both carry content learned from
+    revoked data. Without propagation they would report no-action, which is the
+    exact false all-clear this product exists to prevent.
+
+    Propagation deliberately starts at the *descendants*, not the source. An
+    analytics table hanging directly off a feed that lost only its training right
+    keeps operating, and proving that precision is what separates this from a
+    blunt subtree delete.
     """
     lost = event.lost_purposes
     if not lost:
         return False
-    return bool(descendant.current_purposes & lost)
+    if descendant.current_purposes & lost:
+        return True
+    return descendant.contaminated_upstream
 
 
 def _matches(rule: Rule, facts: Mapping[str, Any]) -> bool:

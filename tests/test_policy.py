@@ -7,7 +7,7 @@ determinism and fail-closed properties the whole design rests on.
 
 from __future__ import annotations
 
-from datetime import datetime, timedelta, timezone
+from datetime import UTC, datetime, timedelta
 
 import pytest
 
@@ -25,9 +25,17 @@ from app.rights import (
     RightsState,
 )
 
-NOW = datetime(2026, 7, 24, 12, 0, tzinfo=timezone.utc)
+NOW = datetime(2026, 7, 24, 12, 0, tzinfo=UTC)
 SOURCE = "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)"
 REPLACEMENT = "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)"
+
+ALL_PURPOSES = {
+    Purpose.TRAINING,
+    Purpose.RETRIEVAL,
+    Purpose.ANALYTICS,
+    Purpose.SERVING,
+    Purpose.EXPORT,
+}
 
 
 def _license(state: RightsState, purposes: set[Purpose]) -> License:
@@ -39,7 +47,9 @@ def _license(state: RightsState, purposes: set[Purpose]) -> License:
     )
 
 
-def _event(*, replacement: str | None = None, new_purposes: set[Purpose] | None = None) -> RightsEvent:
+def _event(
+    *, replacement: str | None = None, new_purposes: set[Purpose] | None = None
+) -> RightsEvent:
     """A revocation event. By default it revokes everything."""
     if new_purposes is None:
         new = _license(RightsState.REVOKED, set())
@@ -51,7 +61,7 @@ def _event(*, replacement: str | None = None, new_purposes: set[Purpose] | None 
         source_urn=SOURCE,
         prior=_license(
             RightsState.APPROVED,
-            {Purpose.TRAINING, Purpose.RETRIEVAL, Purpose.ANALYTICS, Purpose.SERVING, Purpose.EXPORT},
+            ALL_PURPOSES,
         ),
         new=new,
         reason="Partner revoked usage rights",
@@ -61,7 +71,13 @@ def _event(*, replacement: str | None = None, new_purposes: set[Purpose] | None 
 
 
 def _path(*, complete: bool = True, depth: int = 2) -> LineagePath:
-    hops = tuple([SOURCE] + [f"urn:li:dataset:(urn:li:dataPlatform:duckdb,license.hop{i},PROD)" for i in range(depth)])
+    hops = (
+        SOURCE,
+        *(
+            f"urn:li:dataset:(urn:li:dataPlatform:duckdb,license.hop{i},PROD)"
+            for i in range(depth)
+        ),
+    )
     return LineagePath(hops=hops, complete=complete)
 
 
@@ -237,11 +253,19 @@ class TestPriority:
     def test_public_high_criticality_outranks_offline_low(self):
         hot = evaluate(
             _event(),
-            _descendant(artifact_class=ArtifactClass.API, exposure=Exposure.PUBLIC, criticality=Criticality.HIGH),
+            _descendant(
+                artifact_class=ArtifactClass.API,
+                exposure=Exposure.PUBLIC,
+                criticality=Criticality.HIGH,
+            ),
         )
         cold = evaluate(
             _event(),
-            _descendant(artifact_class=ArtifactClass.EXPORT, exposure=Exposure.OFFLINE, criticality=Criticality.LOW),
+            _descendant(
+                artifact_class=ArtifactClass.EXPORT,
+                exposure=Exposure.OFFLINE,
+                criticality=Criticality.LOW,
+            ),
         )
         assert hot.priority > cold.priority
 

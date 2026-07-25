@@ -21,6 +21,7 @@ dependencies = [
 dev = [
     "pytest>=8.3",
     "pytest-asyncio>=0.24",
+    "ruff>=0.16",
 ]
 
 [build-system]
@@ -34,3 +35,19 @@ packages = ["app", "adapters"]
 testpaths = ["tests"]
 pythonpath = ["."]
 addopts = "-q"
+
+[tool.ruff]
+line-length = 100
+target-version = "py312"
+exclude = [".venv", "web", "build", "dist"]
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "B", "UP", "S", "RUF"]
+ignore = [
+    "S101",  # assert is the idiom pytest is built on
+]
+
+[tool.ruff.lint.per-file-ignores]
+# Tests deliberately construct foreign URNs and fixture credentials to prove
+# the guards reject them; those are not real secrets.
+"tests/*" = ["S105", "S106"]

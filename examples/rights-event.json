@@ -1,0 +1,38 @@
+{
+  "event_id": "evt-lcb-demo-001",
+  "version": 1,
+  "effective_at": "2026-07-25T20:29:06.575573Z",
+  "source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+  "prior": {
+    "license_id": "PARTNER-2026-01",
+    "name": "Partner review feed agreement",
+    "permitted_purposes": [
+      "retrieval",
+      "analytics",
+      "training"
+    ],
+    "state": "approved",
+    "environments": [
+      "PROD"
+    ],
+    "evidence_ref": null
+  },
+  "new": {
+    "license_id": "PARTNER-2026-01",
+    "name": "Partner review feed agreement",
+    "permitted_purposes": [
+      "analytics"
+    ],
+    "state": "restricted",
+    "environments": [
+      "PROD"
+    ],
+    "evidence_ref": null
+  },
+  "reason": "Partner revoked training and retrieval rights effective immediately",
+  "evidence_ref": null,
+  "replacement_source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)",
+  "requester": "governance@example.com",
+  "approver": null,
+  "recorded_at": "2026-07-25T20:29:06.575765Z"
+}

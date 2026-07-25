@@ -169,7 +169,92 @@ Escalated to the coordinator as open item 2 in `IMPLEMENTATION_PLAN.md`.
 
 ---
 
+## ADR-010: Writeback is reversible by construction
+
+**Date:** 2026-07-25 · **Status:** accepted
+
+`reversible_tag_writeback` captures the prior aspect, writes, immediately re-reads
+to prove the write landed, then restores the prior state.
+
+Two reasons. First, the shared instance hosts five submissions and a demo that
+accumulates residue every run degrades everyone's state. Second, a write is not
+evidence until DataHub reports it back — the re-read is the proof, not the 200
+response.
+
+Restoration runs even when verification fails: a write that landed but could not be
+confirmed still has to be rolled back. `verified` and `restored` are recorded
+separately and `clean` requires both, so an unrestored write can never be reported
+as a successful one.
+
+**Revisit if:** the demo needs durable revocation status in DataHub, which is a
+different operation with its own lifecycle.
+
+---
+
+## ADR-011: The fake enforces the same guards as the live client
+
+**Date:** 2026-07-25 · **Status:** accepted
+
+`FakeDataHubClient` calls the same `require_in_namespace` guard on writes that
+`HttpDataHubClient` does.
+
+A permissive fake would make every isolation test vacuous — foreign writes would
+pass in tests and fail only in production, which is the worst possible place to
+discover it. `tests/test_isolation.py::TestFakeMatchesLiveGuards` asserts the guard
+is actually wired in, so the fake cannot silently drift more permissive.
+
+---
+
+## ADR-012: Readiness requires positive proof, not reachability
+
+**Date:** 2026-07-25 · **Status:** accepted
+
+A reachable GMS is explicitly **not** sufficient to report ready. Readiness requires
+a configured token, an MCP endpoint advertising every required tool, the project
+domain and tag, and at least one readable `license.` entity.
+
+The failure this prevents: an unauthenticated or unseeded instance answers
+`/config` happily and returns empty result sets. An impact analysis over an empty
+graph is indistinguishable from an all-clear. A worker missing `get_lineage` fails
+the same way. Unrunnable checks are reported failed, never skipped — an unrunnable
+check is not a passing check.
+
+---
+
+## ADR-013: Contamination propagates downstream from affected descendants
+
+**Date:** 2026-07-25 · **Status:** accepted
+
+The first offline run of the vertical slice reported `no_action` for the prediction
+API and the CSV export.
+
+`is_affected` compared only a descendant's own declared purposes against the
+revoked set. The API declares `serving` and the export declares `export`; the demo
+event revokes `training` and `retrieval`. Neither matched, so both looked clean —
+despite the API serving predictions from a model trained on revoked data.
+
+That is a false all-clear, the specific failure this product exists to prevent, and
+it directly contradicted the demo narrative in `DEMO_AND_SUBMISSION.md`.
+
+An artifact is now in scope when its own purposes are revoked **or** an ancestor on
+a lineage path uses a revoked purpose. Propagation starts at the descendants, not
+the source: treating the revoked source as contaminating would sweep in the
+analytics branch and destroy the precision that makes an unaffected result
+meaningful.
+
+Found by running the slice rather than by a test — the unit tests used synthetic
+descendants and never exercised a full path. Four regression tests now cover it.
+
+**Revisit if:** artifacts need per-column or per-partition contamination rather
+than whole-artifact.
+
+---
+
 ## Versions
 
-To be recorded once DataHub connectivity is established (Milestone B): DataHub,
-`acryl-datahub`, `datahub-agent-context`, and the MCP integration.
+**Not yet recorded.** This session was barred from AWS access, so no live DataHub
+connection was made. DataHub, `acryl-datahub`, `datahub-agent-context`, and MCP
+integration versions must be captured during the coordinator's live verification
+pass.
+
+Local toolchain in use: Python 3.13.2, ruff 0.16.0, pytest 8.x.

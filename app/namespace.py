@@ -15,9 +15,9 @@ See ``../COORDINATOR_PLAN.md`` for the portfolio-wide isolation registry.
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Iterable, Sequence
 
 
 class NamespaceViolation(Exception):

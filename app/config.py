@@ -11,7 +11,6 @@ else derives from that.
 
 from __future__ import annotations
 
-import os
 from functools import lru_cache
 from pathlib import Path
 
@@ -113,12 +112,12 @@ def reset_settings_cache() -> None:
 
 
 __all__ = [
-    "Settings",
-    "get_settings",
-    "reset_settings_cache",
-    "PROJECT_SLUG",
-    "INTERNAL_PORT",
     "DATAHUB_DOMAIN",
     "DATAHUB_PROJECT_TAG",
     "DATAHUB_URN_PREFIX",
+    "INTERNAL_PORT",
+    "PROJECT_SLUG",
+    "Settings",
+    "get_settings",
+    "reset_settings_cache",
 ]

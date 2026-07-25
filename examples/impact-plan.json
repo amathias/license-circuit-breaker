@@ -1,0 +1,242 @@
+{
+  "decisions": [
+    {
+      "actions": [
+        "freeze"
+      ],
+      "artifact_class": "api",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:rest-api,license.services.predict_api,PROD)",
+      "missing_evidence": [],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
+            "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
+            "urn:li:mlModel:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:rest-api,license.services.predict_api,PROD)"
+          ]
+        }
+      ],
+      "priority": 90,
+      "rationale": "Live API or deployment serving revoked-derived content; freeze it.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R050"
+      ]
+    },
+    {
+      "actions": [
+        "retrain",
+        "replace"
+      ],
+      "artifact_class": "model",
+      "descendant_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)",
+      "missing_evidence": [],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
+            "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
+            "urn:li:mlModel:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)"
+          ]
+        }
+      ],
+      "priority": 65,
+      "rationale": "Model or training snapshot that learned from revoked data, with an approved replacement available. Retrain, then replace the served artifact.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R030"
+      ]
+    },
+    {
+      "actions": [
+        "escalate"
+      ],
+      "artifact_class": "dataset",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.legacy_snapshot,PROD)",
+      "missing_evidence": [
+        "DataHub lineage has a gap on at least one path to this artifact",
+        "Manual confirmation required that no untracked copies exist"
+      ],
+      "paths": [
+        {
+          "complete": false,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.legacy_snapshot,PROD)"
+          ]
+        }
+      ],
+      "priority": 60,
+      "rationale": "Lineage to this artifact is incomplete, so downstream impact cannot be bounded. Escalate for manual review instead of asserting containment.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R001"
+      ]
+    },
+    {
+      "actions": [
+        "rebuild"
+      ],
+      "artifact_class": "dataset",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
+      "missing_evidence": [],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)"
+          ]
+        }
+      ],
+      "priority": 50,
+      "rationale": "Derived dataset or transformation rebuildable from an approved source.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R020"
+      ]
+    },
+    {
+      "actions": [
+        "purge",
+        "rebuild"
+      ],
+      "artifact_class": "vector_index",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:vectorstore,license.indexes.review_search,PROD)",
+      "missing_evidence": [],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:vectorstore,license.indexes.review_search,PROD)"
+          ]
+        }
+      ],
+      "priority": 50,
+      "rationale": "Vector index rebuildable from approved content; purge then rebuild.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R040"
+      ]
+    },
+    {
+      "actions": [
+        "rebuild"
+      ],
+      "artifact_class": "feature",
+      "descendant_urn": "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
+      "missing_evidence": [],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
+            "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)"
+          ]
+        }
+      ],
+      "priority": 50,
+      "rationale": "Feature table rebuildable from an approved source.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R022"
+      ]
+    },
+    {
+      "actions": [
+        "no_action"
+      ],
+      "artifact_class": "dataset",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reports.review_volume,PROD)",
+      "missing_evidence": [],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reports.review_volume,PROD)"
+          ]
+        }
+      ],
+      "priority": 40,
+      "rationale": "The artifact descends from the source but does not use any purpose the event removed. No action, recorded with its lineage evidence.",
+      "requires_approval": false,
+      "rule_ids": [
+        "LCB-R010"
+      ]
+    },
+    {
+      "actions": [
+        "quarantine"
+      ],
+      "artifact_class": "export",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:file,license.exports.reviews_extract,PROD)",
+      "missing_evidence": [
+        "Quarantine covers the tracked export; copies distributed outside the graph are not addressed"
+      ],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:file,license.exports.reviews_extract,PROD)"
+          ]
+        }
+      ],
+      "priority": 25,
+      "rationale": "Export or extract that has left the platform boundary; quarantine it.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R051"
+      ]
+    }
+  ],
+  "event": {
+    "approver": null,
+    "effective_at": "2026-07-25T20:28:53.451037Z",
+    "event_id": "evt-lcb-demo-001",
+    "evidence_ref": null,
+    "new": {
+      "environments": [
+        "PROD"
+      ],
+      "evidence_ref": null,
+      "license_id": "PARTNER-2026-01",
+      "name": "Partner review feed agreement",
+      "permitted_purposes": [
+        "analytics"
+      ],
+      "state": "restricted"
+    },
+    "prior": {
+      "environments": [
+        "PROD"
+      ],
+      "evidence_ref": null,
+      "license_id": "PARTNER-2026-01",
+      "name": "Partner review feed agreement",
+      "permitted_purposes": [
+        "retrieval",
+        "analytics",
+        "training"
+      ],
+      "state": "approved"
+    },
+    "reason": "Partner revoked training and retrieval rights effective immediately",
+    "recorded_at": "2026-07-25T20:28:53.451113Z",
+    "replacement_source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)",
+    "requester": "governance@example.com",
+    "source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+    "version": 1
+  },
+  "simulated": true
+}

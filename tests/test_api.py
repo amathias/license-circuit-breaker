@@ -40,26 +40,52 @@ class TestHealth:
 
 
 class TestReadiness:
-    def test_reports_every_check(self, client):
+    def test_reports_every_required_check(self, client):
         body = client.get("/api/readiness").json()
         names = {c["name"] for c in body["checks"]}
-        assert names == {"state_dir", "policy_table", "namespace_guard", "datahub"}
+        assert {
+            "state_dir",
+            "policy_table",
+            "namespace_guard",
+            "datahub_token",
+            "datahub_endpoints",
+            "mcp_capabilities",
+            "project_entities",
+        } <= names
 
-    def test_degraded_when_datahub_unconfigured(self, client, monkeypatch):
-        monkeypatch.setenv("DATAHUB_GMS_URL", "")
+    def test_degraded_when_token_missing(self, client, monkeypatch):
         monkeypatch.setenv("DATAHUB_TOKEN", "")
         reset_settings_cache()
         body = client.get("/api/readiness").json()
         assert body["status"] == "degraded"
-        datahub = next(c for c in body["checks"] if c["name"] == "datahub")
-        assert not datahub["passed"]
+        token = next(c for c in body["checks"] if c["name"] == "datahub_token")
+        assert not token["passed"]
 
-    def test_local_checks_pass_without_datahub(self, client, monkeypatch):
+    def test_degraded_when_endpoints_unconfigured(self, client, monkeypatch):
         monkeypatch.setenv("DATAHUB_GMS_URL", "")
+        monkeypatch.setenv("DATAHUB_MCP_URL", "")
         reset_settings_cache()
         body = client.get("/api/readiness").json()
-        local = [c for c in body["checks"] if c["name"] != "datahub"]
-        assert all(c["passed"] for c in local)
+        assert body["status"] == "degraded"
+        endpoints = next(c for c in body["checks"] if c["name"] == "datahub_endpoints")
+        assert not endpoints["passed"]
+
+    def test_unreachable_datahub_is_never_ready(self, client, monkeypatch):
+        # A configured but unreachable instance must fail closed rather than
+        # falling back to a locally-green result.
+        monkeypatch.setenv("APP_ENV", "live")
+        monkeypatch.setenv("DATAHUB_GMS_URL", "http://127.0.0.1:1")
+        monkeypatch.setenv("DATAHUB_MCP_URL", "http://127.0.0.1:1/mcp")
+        monkeypatch.setenv("DATAHUB_TOKEN", "fixture-token")
+        reset_settings_cache()
+        body = client.get("/api/readiness").json()
+        assert body["status"] == "degraded"
+
+    def test_offline_mode_is_flagged_as_simulated(self, client, monkeypatch):
+        monkeypatch.setenv("APP_ENV", "offline")
+        reset_settings_cache()
+        body = client.get("/api/readiness").json()
+        assert body["simulated"] is True
 
     def test_reports_the_enforced_namespace(self, client):
         body = client.get("/api/readiness").json()

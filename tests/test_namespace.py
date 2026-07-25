@@ -94,7 +94,7 @@ class TestRequire:
 
     @pytest.mark.parametrize("token", ["*", "**", "%", "all", "", "urn:li:*"])
     def test_global_selectors_refused(self, token):
-        with pytest.raises(NamespaceViolation, match="global selector|outside"):
+        with pytest.raises(NamespaceViolation, match=r"global selector|outside"):
             require_in_namespace(token, NS, "purge")
 
     def test_operation_name_appears_in_message(self):
