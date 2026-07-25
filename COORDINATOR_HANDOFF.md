@@ -139,16 +139,25 @@ configuration. No secret values appear in `.env.example` or this document.
 
 ### DataHub operations this project performs
 
-| Operation | Aspect | Scope |
+| Operation | Aspect(s) | Scope |
 |---|---|---|
-| Read entity context | `get_entities` via MCP | `license.` only |
-| Read downstream lineage | `get_lineage` via MCP | from `license.` sources |
-| Reversible tag writeback | `globalTags` via GMS `ingestProposal` | `license.` only, restored immediately |
-| Seed / reset | `globalTags` | `license.` + fixture marker only |
+| Read entity context | `get_entities` via MCP, batched | `license.` only |
+| Read downstream lineage | `get_lineage` via MCP, `upstream=false`, bounded hops | from `license.` sources |
+| Read advertised tools | `tools/list` via MCP | read-only introspection |
+| Seed | `DatasetProperties`, `Status`, `GlobalTags`, `Domains`, `UpstreamLineage` via SDK proposals | `license.` only |
+| Reversible tag writeback | `GlobalTags` via SDK proposal | `license.` only, restored immediately |
+| Soft reset | `GlobalTags` (cleared) + `Status(removed=True)` | `license.` + fixture marker only |
+| Restore | full seed aspect set | `license.` + fixture marker only |
 
-Entities created: 12 (11 graph nodes + 1 sentinel), all prefixed `license.`, all
-tagged `project-license-circuit-breaker` and `lcb-demo-fixture`, all in domain
-`Demo / License Circuit Breaker`.
+Entities created: 12 (11 graph nodes + 1 sentinel), all `dataset` URNs prefixed
+`license.` carrying an `artifact_class` custom property, all tagged
+`project-license-circuit-breaker` and `lcb-demo-fixture`, all assigned the
+`Demo / License Circuit Breaker` domain. Lineage: 9 declared edges, one
+deliberately unresolvable to exercise fail-closed escalation.
+
+**Never touched:** the domain entity and the tag entities themselves. Those are
+shared coordinator-owned controls; this project references them and never creates,
+mutates, or removes them. `tests/test_isolation.py` asserts this.
 
 ### Coordinator rulings
 
@@ -174,8 +183,18 @@ Application process is light: FastAPI + SQLite + DuckDB + a TF-IDF index, no GPU
 model downloads. Startup under two seconds. Memory well under 512 MB. The DataHub stack
 itself is the only significant consumer and is coordinator-owned.
 
-Slice runtime offline is under a second. Live runtime is dominated by MCP round trips;
-the slice issues roughly 2N + 4 calls for N descendants.
+Slice runtime offline is under a second. Live runtime is dominated by MCP round
+trips. With batched `get_entities` the slice issues roughly 6 MCP calls regardless
+of descendant count, plus 4 GMS proposals for the reversible writeback. Seed issues
+5 proposals per entity (60 for the demo graph) followed by one batched verification
+read.
+
+Each MCP call opens its own session, since the application is synchronous. That is
+acceptable at demo volume but is the first thing to change if the graph grows.
+
+The `slow`-marked packaging tests take roughly 12 minutes, dominated by two isolated
+`acryl-datahub` installs. Run the fast suite (`-m "not slow"`) during development and
+the full suite before proposing a candidate.
 
 ### Deployment candidate
 
