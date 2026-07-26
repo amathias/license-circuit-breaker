@@ -394,6 +394,52 @@ committed.
 
 ---
 
+## ADR-020: The console formats; it never decides
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+Every verdict, status, probe result, and residual exposure the judge console shows
+is read from the API. The page computes nothing. If the page and the evidence
+report ever disagreed, the report would be the one to trust, so the page is given
+nothing to disagree with.
+
+Two consequences that look like bugs and are not:
+
+The **Execute button stays enabled without an approval.** Disabling it would hide
+the control being demonstrated. Pressing it produces a real 409 from the server
+with the real reason, rendered verbatim. The gate lives in `app/api.py`, so it
+holds for anything that can reach the port — curl included — rather than for
+whatever the browser chooses to send.
+
+The graph is **hand-drawn SVG** with a deterministic layered layout, not a graph
+library. The picture is identical in every take of a recorded demo, and the
+console installs from two runtime dependencies rather than fifty. Colour encodes
+the policy verdict, never the DataHub entity type: the artifact class is written
+on the node anyway, and what a judge is looking for is what happens to it.
+
+---
+
+## ADR-021: The console/API contract is read from the OpenAPI schema
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+`tests/test_console.py` asserts that every `/api/...` path the console fetches is
+actually served. The first implementation walked `app.routes` recursively. That
+passed in a full-suite run and failed when the module ran alone: this FastAPI
+version keeps an included router as an opaque `_IncludedRouter` container rather
+than flattening its endpoints onto the application, so the walk found the
+container and none of the routes inside it. Whether the test passed depended on
+which other test module had run first.
+
+The check now reads `app.openapi()["paths"]`. That is the supported way to ask
+what an application serves, it is what a judge reading `/docs` sees, and it does
+not depend on a private attribute whose shape has already changed once.
+
+The lesson generalizes: an assertion that reads a framework's internals is not
+testing the framework's behavior, it is testing this month's implementation of it.
+
+---
+
 ## Versions
 
 **No live DataHub evidence has been captured.** This session was barred from AWS
