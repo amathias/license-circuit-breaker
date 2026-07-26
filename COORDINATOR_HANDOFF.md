@@ -36,27 +36,49 @@ live EC2 host from this project chat.
 | Field | Current value |
 |---|---|
 | Status | `in progress` |
-| Milestone | Milestone B corrected after coordinator review — complete offline; live gate open |
+| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline; live gate still open |
 | Verified commit/artifact | See "Deployment candidate" below |
 | Build command | `py -3.13 -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[dev]"` |
+| Console build command | `npm --prefix web install && npm --prefix web run build` — **see the deployment note below** |
 | Test command | `.venv/Scripts/python.exe -m pytest tests/` |
 | Fast test command | `.venv/Scripts/python.exe -m pytest tests/ -m "not slow"` |
 | Lint command | `.venv/Scripts/python.exe -m ruff check .` |
+| Coverage command | `.venv/Scripts/python.exe -m pytest tests/ -m "not slow" --cov` (floor 85%) |
+| Typecheck command | `npm --prefix web run typecheck` |
 | Seed command | `python -m demo.cli seed` (emits full catalog entries, then verifies by reread) |
 | Reset command | `python -m demo.cli reset` (soft, exactly-allowlisted) |
 | Restore command | `python -m demo.cli restore` (reverses a soft reset) |
 | Slice command | `python -m demo.cli slice [--output plan.json]` |
+| Demo command | `python -m demo.cli contain [--approve]` (exit 8 refused, 9 verdict short of contained) |
 | Receipt check | `python -m demo.cli verify` |
 | Console script | `license-circuit-breaker <command>` |
 | Run command | `.venv/Scripts/python.exe -m app.main` |
 | Health endpoint | `GET /api/health` — verified locally, returns 200 without DataHub |
 | Readiness endpoint | `GET /api/readiness` — fail-closed, non-mutating, verified locally |
+| Judge console | `GET /` — served from `web/dist` when built; absent without error when not |
 | Persistent volumes | `APP_STATE_DIR` only (receipts, manifests, demo artifacts). No hardcoded paths. |
 | Long-running workers | None |
 | DataHub read | **Not verified live.** Client implemented; exercised only against the in-memory fake. |
-| DataHub writeback | **Not verified live.** Reversible writeback implemented and tested offline. |
+| DataHub writeback | **Not verified live.** Durable and reversible writeback both implemented and tested offline. |
 | Blockers | Live DataHub gate requires an AWS/SSM session this session was barred from |
-| Evidence produced | 285 tests, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (19 ADRs) |
+| Evidence produced | 557 tests, 88.16% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (23 ADRs) |
+
+### Deployment note: the console is a build step, not a checked-in asset
+
+`web/dist` is gitignored. A deployment that clones the repository and runs
+`python -m app.main` will serve the API correctly and **serve no console at all** —
+`app/main.py` mounts the static directory only when it exists, so a missing build
+is silent rather than fatal. That is deliberate: the API and the CLI must stay
+runnable without a Node toolchain.
+
+If the deployed environment should serve the judge console, the deploy needs
+Node 20+ and `npm --prefix web install && npm --prefix web run build` before the
+process starts. If it should not, nothing needs to change and `GET /` will 404.
+
+This is a new deployment-facing requirement and is flagged for the coordinator
+rather than assumed. No port, route, environment variable, or namespace changed:
+the console is served from the existing port 8102 under `/`, and the static mount
+is added after the API router so it cannot shadow `/api`.
 
 ### Evidence status — read before promoting
 
@@ -68,6 +90,12 @@ in-memory fake.
 Integration gates 3 (real context read) and 4 (verified writeback) remain **open**.
 They require a live run during the coordinator's verification pass. Nothing in this
 handoff should be read as claiming they passed.
+
+This remains true of the judge console. It was exercised against a locally running
+instance in `APP_ENV=offline`, which is how the banner it renders comes to say
+"Simulated DataHub". The console has never been pointed at a live instance, and
+`README.md` states this in the same terms so a judge reading the repository cannot
+form the opposite impression.
 
 ### Response to the coordinator review of `c116a26`
 
@@ -110,14 +138,61 @@ carries the semantics the policy engine consumes.
   endpoints, MCP tools, exact domain, tag controls, full entity coverage with
   required properties, and complete fixture lineage.
 
+### Milestone C contents
+
+- **Judge console** (`web/`): React + TypeScript in strict mode, two runtime
+  dependencies, eight stages in demo order. Served by FastAPI from `web/dist`
+  when built. The console formats and never computes: every verdict, status, and
+  residual exposure it shows is read from the API (ADR-020).
+- **Console/API contract tests** (`tests/test_console.py`): every `/api` path the
+  client fetches must be served, and every field the page renders must appear in
+  a real response. Read from the OpenAPI schema rather than from framework
+  internals (ADR-021).
+- **Public-safety gate** (`tests/test_public_safety.py`): scans the exact
+  shippable file set for credential shapes, `.env`, runtime state, build output,
+  and absolute home-directory paths (ADR-023).
+- **Coverage gate**: `pytest --cov`, floor 85%, `pytest-cov` declared in the dev
+  extras.
+- **`contain` command regressions** (`tests/test_cli.py`): the exit codes the
+  README documents are now asserted in process rather than described.
+- **Submission documentation**: `README.md` is the judge-facing entry point with a
+  reproducible quickstart; `DEMO_AND_SUBMISSION.md` is a runbook whose every
+  number came from an actual run; `examples/containment-report.md` is that run,
+  captured verbatim.
+
 ### CLI exit codes
 
 `0` success · `2` refused (sentinel missing, or target set not exactly the
 allowlist) · `3` refused by the namespace guard · `4` seed emitted but unverifiable
 · `5` partial reset/restore failure · `6` slice completed but writeback was not both
-verified and restored.
+verified and restored · `8` `contain` refused by the approval gate, nothing enforced
+· `9` `contain` completed with a verdict short of `contained`.
 
-### Defect found and fixed this milestone
+`9` is the expected result of the documented demo. One descendant is reachable
+only through a lineage path DataHub cannot complete, so it escalates. A `contain`
+run that exited `0` on the demo fixture would mean the escalation had been lost.
+
+### Defects found and fixed this milestone
+
+**The console contract test passed for the wrong reason.** It walked `app.routes`
+recursively to collect served paths. This FastAPI version keeps an included router
+as an opaque container rather than flattening its routes onto the application, so
+the walk found the container and none of the endpoints in it — and whether the
+test passed depended on which other module had run first. It now reads
+`app.openapi()["paths"]`. Recorded as ADR-021.
+
+**The evidence report leaked an absolute path, and nothing caught it.** The
+writeback section of `EvidenceBundle.to_markdown` interpolated the receipt list
+into an f-string, emitting a multi-thousand-character Python dict repr that
+carried the absolute evidence path once per receipt — including the developer's
+home directory name, on an artifact bound for a public repository. Receipts now
+render as a table, the committed example is generated with a relative
+`APP_STATE_DIR`, and `tests/test_public_safety.py` fails the build on any
+home-directory path in a shippable file. Recorded as ADR-022 and ADR-023.
+
+Neither defect affected deployment behavior, enforcement, or the namespace guard.
+
+### Defect found in the previous milestone
 
 The first offline slice run reported `no_action` for the prediction API and the CSV
 export. `is_affected` compared only each descendant's own declared purposes against
@@ -201,10 +276,13 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | `47b3df6db857c8e441a8c72bac810659006ef9b2` |
-| Supersedes | `c116a26c223ea65f120c86ff5486dd3fd634773e` (rejected) |
-| Tests | 283 fast + 2 slow archive-install = **285 passing** |
+| Product candidate | `3f92117751baee105c0563078d0f0d6c9311d4df` |
+| Supersedes | `47b3df6db857c8e441a8c72bac810659006ef9b2` (superseded, not rejected) |
+| Tests | 555 fast + 2 slow archive-install = **557 passing** |
+| Coverage | **88.16%** (floor 85%) |
 | Lint | ruff clean |
+| Console typecheck | `tsc --noEmit` clean; `vite build` succeeds |
+| Public-safety gate | passing |
 | Working tree | clean |
 | Local `main` == `origin/main` | yes |
 
@@ -219,6 +297,8 @@ curl -s $APP_PUBLIC_URL/api/readiness     # expect status "ready", 9/9 checks pa
 APP_ENV=live python -m demo.cli slice     # expect exit 0 and verified=True restored=True
 APP_ENV=live python -m demo.cli reset     # expect "12 soft-removed"
 APP_ENV=live python -m demo.cli restore   # expect "Restored 12 entities"
+curl -s -o /dev/null -w '%{http_code}' $APP_PUBLIC_URL/   # 200 if the console was
+                                                          # built, 404 if not
 ```
 
 A non-zero exit from `slice` means the writeback was not both verified and
@@ -227,11 +307,15 @@ restored; treat the writeback gate as failed and check the receipt's
 
 ### Known limitations
 
-- Containment adapters are not implemented; no local artifact is disabled yet.
 - The receipt ledger is tamper-**evident**, not tamper-proof.
 - Purpose metadata is read from custom properties this project seeds.
-- Reversible writeback proves capability without leaving state; durable revocation
-  status is a later milestone.
+- Durable revocation writeback is implemented (`POST /api/writeback`, and the
+  writeback stage of `demo.cli contain`): each artifact receives the status it
+  earned plus the plan hash and an evidence reference, confirmed by re-read. The
+  separate *reversible* writeback used by `demo.cli slice` remains the mechanism
+  for proving catalog-write capability without leaving state behind.
+- The console is a build artifact, not a checked-in one. See the deployment note
+  under "Milestone handoff".
 - Demo concurrency: seed and reset are not mutually exclusive across processes. Two
   concurrent resets are safe (idempotent, sentinel-gated) but a concurrent seed and
   reset against the same instance would interleave. Single-operator assumption
