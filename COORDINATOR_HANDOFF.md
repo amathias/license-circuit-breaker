@@ -543,7 +543,7 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | `f1050e208d9d777e768195f122fad72f05238a54` |
+| Product candidate | `eb815889c7743fcc723cc1ad9182b72838476a93` |
 | Supersedes | `f1050e208d9d777e768195f122fad72f05238a54` (**rejected** by the coordinator's independent pre-deployment review: the lineage parser accepted booleans as counts and an absent total as zero, both fail-open; its envelope parsing was confirmed good and is carried forward unchanged). Which in turn superseded `0674f3a985ea400aa6c45385982b37f8adbd517e`, rejected by the live gate because the payload parsers could not read the real envelopes; that commit's transport fix was confirmed good |
 | Tests | 725 fast + 2 slow archive-install = **727 passing** |
 | Coverage | **90.69%** (floor 85%) |
