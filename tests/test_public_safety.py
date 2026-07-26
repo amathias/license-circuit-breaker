@@ -103,6 +103,16 @@ class TestNothingSecretShips:
             assert "node_modules/" not in relative, f"node_modules would ship: {relative}"
             assert not relative.startswith("web/dist/"), f"build output would ship: {relative}"
 
+    def test_no_tooling_artifact_is_shippable(self):
+        # Caught late: running the coverage gate drops a `.coverage` database in
+        # the repository root. It has no file extension, so the text scan skips
+        # it, and it is not under any of the directories checked above -- it was
+        # simply untracked and unignored, which means shippable.
+        artifacts = {".coverage", ".ruff_cache", ".pytest_cache", "htmlcov"}
+        for path in _shippable_files():
+            head = path.relative_to(REPO).as_posix().split("/")[0]
+            assert head not in artifacts, f"a tooling artifact would ship: {head}"
+
     def test_no_credential_shaped_string_ships(self, scannable):
         offenders: list[str] = []
         for path in scannable:
