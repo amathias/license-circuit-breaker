@@ -364,7 +364,7 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | the product commit this handoff ships with; its exact SHA is recorded by the `docs:` commit that immediately follows it |
+| Product candidate | `c0574cd7e8e538c49266b87611a3b6e65cec7442` |
 | Supersedes | `03cda1d970924767aee27ea8c0192edb61efc71f` (**rejected** by the live gate: HTTP 422 on seed) |
 | Tests | 609 fast + 2 slow archive-install = **611 passing** |
 | Coverage | **88.70%** (floor 85%) |
