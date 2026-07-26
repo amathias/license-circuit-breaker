@@ -1,104 +1,197 @@
 # Demo and Submission Guide: License Circuit Breaker
 
+This is the runbook for recording the demo and filling in the submission. Every number,
+rule ID, and exit code below was taken from an actual offline run — see
+`examples/containment-report.md` for the captured output.
+
 ## Devpost short description
 
-License Circuit Breaker is a DataHub-powered enforcement agent for data and AI supply chains. When an upstream usage right is revoked, it traces every affected descendant, applies deterministic policy, executes approved containment or replacement actions, verifies that prohibited artifacts stopped serving, and writes the evidence back to DataHub.
+License Circuit Breaker is a DataHub-powered enforcement agent for data and AI supply
+chains. When an upstream usage right is revoked, it traces every affected descendant,
+applies deterministic policy, executes approved containment or replacement actions,
+verifies that prohibited artifacts stopped serving, and writes the evidence back to
+DataHub.
 
-## Three-minute demo target
+---
 
-Aim for **2 minutes 35 seconds to 2 minutes 45 seconds**.
+## Before recording
+
+```bash
+python -m demo.cli estate reset && python -m demo.cli estate build
+npm --prefix web run build
+python -m app.main                       # http://127.0.0.1:8102
+```
+
+Open the console and press **Reset demo** once. That rebuilds the estate *and* clears the
+approval and run journals, so the recording starts from a state where the gate has nothing
+recorded and will genuinely refuse.
+
+Check before you hit record:
+
+- Stage 1 shows all three probes as **exposed**, with `P-` review IDs visible in the search
+  results. Those are the partner rows.
+- Stage 5 shows "No decision has been recorded."
+- The masthead shows **verdict: not_started** and the amber **DataHub: simulated** pill.
+
+Keep the network tab open. The status codes are part of the argument.
+
+---
+
+## Three-minute demo
+
+Target **2:35–2:45**. Timings are the console walkthrough; the CLI equivalent is in
+brackets where it differs.
 
 ### 0:00–0:18 — Prove exposure
 
-Query the demo API and vector search so judges see content derived from the licensed source being served.
+Stage 1. The prediction API answers, vector search returns partner rows, the CSV export
+resolves. [`python -m demo.cli probe`]
 
-> A partner has revoked our right to use this review feed. Its data has already reached a model, vector index, endpoint, and export.
+> A partner has revoked our right to use this review feed. That data has already reached a
+> model, a vector index, an endpoint, and an export.
 
 ### 0:18–0:50 — Trigger and trace
 
-Create the structured rights event. Show DataHub traversal and the affected graph, including an unaffected branch.
+Stage 2 for the rights event — structured, hashed, with `training` and `retrieval` lost and
+`analytics` retained. Stage 3 for the graph. Click `license.reports.review_volume` and show
+it is **not** affected, then click `license.reviews.legacy_snapshot` and show its lineage
+path is incomplete.
 
-> DataHub supplies the end-to-end provenance, owners, entity types, and serving context. The agent cites the exact lineage path for every decision.
+> DataHub supplies the provenance. The agent cites the exact lineage path behind every
+> decision — and when the path has a gap, it says so instead of guessing.
 
 ### 0:50–1:20 — Policy and approval
 
-Show deterministic rule IDs and typed actions: freeze, purge, quarantine, replace, or retrain. Display missing-evidence warnings and approval.
+Stage 4: eight decisions, each with a rule ID. Point at `LCB-R050` freezing the API,
+`LCB-R040` purging the index, `LCB-R001` escalating the broken-lineage snapshot, and
+`LCB-R010` clearing the analytics report.
 
-> The language model can explain the plan, but deterministic rules and human approval control enforcement.
+Then **press Execute before approving.** The server answers **409** and the console renders
+the reason verbatim. [`python -m demo.cli contain` → exit 8]
+
+> The plan is complete and correct, and nothing has been touched, because no human has said
+> so. The gate is on the server, not in the browser.
+
+Now approve. Note that the approval binds to the plan hash shown above it.
 
 ### 1:20–2:05 — Execute
 
-Approve. Show API freeze, vector purge/rebuild, export quarantine, and toy-model replacement or retraining.
+Stage 6. Eight steps: freeze, quarantine, purge, rebuild ×3, retrain, replace. Point out
+step 4 reporting **no change** — the rebuild was already satisfied, and it says so rather
+than claiming work it did not do.
 
-> These local actions actually execute. Each adapter emits evidence and can be retried safely.
+> These actions really execute against local artifacts. Each one is idempotent, so a resumed
+> run cannot double-apply.
 
 ### 2:05–2:30 — Verify
 
-Repeat the endpoint/index probes, show the approved model manifest, residual-exposure result, and DataHub writeback.
+Stage 7. Eight probes pass: six containment, two precision. Highlight the two precision
+probes — the analytics report is still queryable and the approved model is still serving.
 
-> Verification prevents a false all-clear. The final evidence identifies both contained and unresolved exposure.
+Then Stage 8, writeback: 8/8 statuses verified, each confirmed by re-read.
+
+> Verification reads the artifacts, never the receipts. And it fails on over-reach too: if
+> containment had broken the branch it was supposed to leave alone, these two probes would
+> fail.
 
 ### 2:30–2:42 — Close
 
-> License Circuit Breaker turns provenance into an executable data-rights control.
+The verdict is **escalated**, not contained, and the residual table names why.
+
+> One artifact is reachable through a lineage path DataHub cannot complete, so it is
+> escalated for manual confirmation. The tool does not report an all-clear it has not
+> earned. License Circuit Breaker turns provenance into an executable data-rights control.
+
+---
+
+## What to say about simulation
+
+Say it once, early, plainly:
+
+> DataHub reads and writeback in this recording run against a deterministic in-memory
+> substitute, and everything produced is labelled simulated. The local artifact changes are
+> real and are probed directly.
+
+Do not narrate around it. The console banner and the report header both state it, and a
+judge who spots it unmentioned will discount everything else.
+
+---
 
 ## Submission narrative
 
 ### Problem
 
-License and provenance tools can identify risk, but organizations still need to manually disable every derivative dataset, model, RAG system, API, and export.
+License and provenance tools can identify risk, but organizations still have to manually
+disable every derivative dataset, model, RAG system, API, and export.
 
 ### Solution
 
-License Circuit Breaker propagates a structured rights event through DataHub lineage, produces an approved containment plan, executes local actions, verifies behavior, and records evidence.
+License Circuit Breaker propagates a structured rights event through DataHub lineage,
+produces an approved containment plan, executes local actions, verifies behavior, and
+records evidence.
 
 ### What makes it original
 
-The differentiator is downstream execution and verification, not license detection or a compliance dashboard.
+The differentiator is downstream execution and verification, not license detection or a
+compliance dashboard. Three specifics worth naming:
+
+- **The verdict is derived, never asserted.** `contained` requires every step completed,
+  every probe passed, and an empty residual list. The demo's honest answer is `escalated`.
+- **Approval binds to a plan hash.** Change the graph, and the approval stops applying
+  rather than silently authorizing a scope nobody reviewed.
+- **Refusals carry meaning.** 451 for containment, 409 for the gate, 503 for degraded — a
+  judge can read containment off the network tab.
 
 ### DataHub usage to state explicitly
 
-- Reads downstream data and ML lineage.
-- Uses schemas, entity types, ownership, tags, and governance context to classify impact.
-- Uses the eligible DataHub agent integration during planning.
-- Writes supported revocation status and evidence references into DataHub.
+- Reads downstream data and ML lineage over the official MCP integration.
+- Uses entity types, tags, domain, and custom properties to classify impact.
+- Writes revocation status, plan hash, and an evidence reference back via the DataHub SDK,
+  each confirmed by re-read.
+- Fails closed outside its assigned `license.` namespace.
 
 ## Judging evidence map
 
 | Criterion | What judges should see |
 |---|---|
-| Use of DataHub | Hidden descendants discovered through live lineage plus visible writeback |
-| Technical execution | Structured policy, approval, real containment adapters, probes, residual exposure |
-| Originality | Executes and verifies revocation instead of only detecting incompatible licenses |
-| Real-world usefulness | Concrete vendor-data and AI supply-chain response workflow |
-| Submission quality | Clear before/after demo, runnable fixtures, evidence examples |
+| Use of DataHub | Descendants discovered through lineage, including one the estate does not make obvious, plus verified writeback |
+| Technical execution | Deterministic rule table, plan-bound approval, five real containment adapters, artifact-level probes, residual exposure |
+| Originality | Executes and verifies revocation rather than only detecting incompatible licenses |
+| Real-world usefulness | A concrete vendor-data and AI supply-chain response workflow |
+| Submission quality | Reproducible from the README, honest labelling of what is simulated |
 
-## Required repository evidence
+## Repository evidence
 
-- `examples/rights-event.json`
-- `examples/impact-plan.json`
-- `examples/containment-report.md`
-- policy decision table and rule IDs
-- before/after endpoint or index results
-- model/source manifests
-- DataHub before/after screenshots
-- architecture and limitations
+| Artifact | Status |
+|---|---|
+| `examples/rights-event.json` | present |
+| `examples/impact-plan.json` | present |
+| `examples/containment-report.md` | present — captured verbatim from an offline run |
+| Policy decision table and rule IDs | `policy/rules.yaml`, cited by every decision |
+| Before/after endpoint and index results | in the containment report, and reproducible via `demo.cli probe` |
+| Model and source manifests | in the estate; read by the `training_manifest_scan` probe |
+| Architecture and limitations | `README.md`, `docs/DECISIONS.md` |
+| DataHub before/after screenshots | **not captured** — requires a live instance |
 
 ## Claims to avoid
 
-- “Provides legal advice.”
-- “Automatically interprets every license or contract.”
-- “Finds all copies, including untracked offline files.”
-- “Cryptographically proves universal model unlearning.”
+- "Provides legal advice."
+- "Automatically interprets every license or contract."
+- "Finds all copies, including untracked offline files."
+- "Cryptographically proves universal model unlearning."
+- "Verified against a live DataHub instance." — not true of anything in this repository.
 
-Prefer: “Executes and verifies policy actions for descendants represented in the demonstrated DataHub graph.”
+Prefer: "Executes and verifies policy actions for descendants represented in the
+demonstrated DataHub graph."
 
 ## Recording checklist
 
 - [ ] Video is public and under three minutes.
 - [ ] Prohibited content is visibly served before the trigger.
-- [ ] DataHub-derived impact is legible.
-- [ ] Policy evidence and approval are shown.
-- [ ] Post-action probes are shown.
+- [ ] DataHub-derived impact is legible, including the unaffected branch.
+- [ ] The gate is shown refusing before any approval is recorded.
+- [ ] Policy evidence and the approval's plan binding are shown.
+- [ ] Post-action probes are shown, including the two precision probes.
+- [ ] The escalated verdict is stated, not glossed.
+- [ ] Simulated DataHub is stated aloud once.
 - [ ] No private contract text, credentials, or copyrighted music appears.
-- [ ] Real and simulated adapters are labeled.
