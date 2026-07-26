@@ -125,6 +125,22 @@ class FakeDataHubClient:
             self.fail_verify_read = False
             self._verify_reads = 1
 
+    def set_properties(self, urn: str, properties: dict[str, str]) -> None:
+        """Merge custom properties, guarded exactly like a tag write."""
+        require_in_namespace(urn, self.namespace, operation="set_properties")
+
+        if self.fail_next_write:
+            self.fail_next_write = False
+            raise DataHubError("simulated write failure")
+
+        entity = self.entities.get(urn)
+        if entity is None:
+            raise DataHubError(f"cannot set properties on unknown entity {urn!r}")
+
+        merged = {**entity.custom_properties, **{str(k): str(v) for k, v in properties.items()}}
+        self.entities[urn] = _replace(entity, custom_properties=merged)
+        self.write_log.append((urn, tuple(sorted(properties))))
+
     def set_status(self, urn: str, removed: bool) -> None:
         """Soft delete or restore, guarded exactly like a tag write."""
         require_in_namespace(urn, self.namespace, operation="set_status")

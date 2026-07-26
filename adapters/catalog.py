@@ -196,6 +196,35 @@ class LiveCatalog:
     def upsert(self, spec: EntitySpec) -> int:
         return self.emit(self.build_proposals(spec))
 
+    def set_custom_properties(
+        self, urn: str, name: str, description: str, properties: dict[str, str]
+    ) -> None:
+        """Rewrite ``datasetProperties`` with a complete property set.
+
+        The aspect is replace-semantics in DataHub, so the caller must supply the
+        merged set. :meth:`adapters.datahub.LiveDataHubClient.set_properties`
+        does that merge, which is why this takes the final state rather than a
+        patch: one place decides what survives, and it is the one that just read
+        the entity.
+        """
+        require_in_namespace(urn, self._namespace, operation="catalog-properties")
+
+        from datahub.emitter.mcp import MetadataChangeProposalWrapper
+        from datahub.metadata.schema_classes import DatasetPropertiesClass
+
+        self.emit(
+            [
+                MetadataChangeProposalWrapper(
+                    entityUrn=urn,
+                    aspect=DatasetPropertiesClass(
+                        name=name,
+                        description=description,
+                        customProperties={str(k): str(v) for k, v in properties.items()},
+                    ),
+                )
+            ]
+        )
+
     def set_status(self, urn: str, removed: bool) -> None:
         """Soft-delete or restore one entity.
 

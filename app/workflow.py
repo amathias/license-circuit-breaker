@@ -19,9 +19,14 @@ from dataclasses import dataclass
 from datetime import UTC, datetime
 
 from adapters.datahub import (
+    STATUS_CONTAINED,
+    STATUS_ESCALATED,
+    STATUS_RESIDUAL,
     DataHubClient,
     DataHubError,
+    RevocationWriteback,
     WritebackReceipt,
+    record_revocation,
     reversible_tag_writeback,
 )
 from app.context import ContextValidation, discover_descendants, validate_entity
@@ -205,6 +210,89 @@ def build_impact_plan(
         validations=(source_validation, *validations),
         generated_at=datetime.now(UTC),
     )
+
+
+def record_containment_outcomes(
+    client: DataHubClient,
+    plan: ImpactPlan,
+    namespace: Namespace,
+    *,
+    verdict: str,
+    contained_urns: frozenset[str],
+    residual_urns: frozenset[str],
+    evidence_ref: str,
+    ledger: ReceiptLedger | None = None,
+    simulated: bool = False,
+) -> tuple[RevocationWriteback, ...]:
+    """Write the durable governance outcome back to DataHub, per artifact.
+
+    Each descendant gets the status *it* earned, not the run's overall verdict.
+    An operator opening one catalog entry needs to know whether that artifact is
+    contained, still exposed, or awaiting a human -- summarising the whole run
+    onto every entity would make the catalog less useful than the report.
+
+    The revoked source carries the overall verdict, because that is the entity
+    someone investigating the rights change will open first.
+
+    Every write is namespace-guarded and verified by re-read. Failures are
+    recorded and returned rather than raised: a writeback that did not land is
+    evidence too, and aborting here would discard the receipts for the writes
+    that did.
+    """
+    receipts: list[RevocationWriteback] = []
+
+    targets: list[tuple[str, str]] = [(plan.event.source_urn, verdict)]
+    for decision in plan.decisions:
+        urn = decision.descendant_urn
+        if decision.is_escalation:
+            status = STATUS_ESCALATED
+        elif urn in residual_urns:
+            status = STATUS_RESIDUAL
+        elif urn in contained_urns:
+            status = STATUS_CONTAINED
+        else:
+            # Not probed and not exposed: nothing was proven either way, so no
+            # status is written rather than implying one.
+            continue
+        targets.append((urn, status))
+
+    for urn, status in targets:
+        try:
+            require_in_namespace(urn, namespace, operation="record_containment_outcome")
+            receipt = record_revocation(
+                client,
+                urn,
+                namespace,
+                status=status,
+                event_id=plan.event.event_id,
+                plan_hash=plan.plan_hash(),
+                evidence_ref=evidence_ref,
+                simulated=simulated,
+            )
+        except (DataHubError, NamespaceViolation) as exc:
+            if ledger is not None:
+                ledger.append(
+                    operation="revocation_writeback",
+                    urn=urn,
+                    succeeded=False,
+                    simulated=simulated,
+                    detail=f"writeback failed: {exc}",
+                    payload={"status": status},
+                )
+            continue
+
+        receipts.append(receipt)
+        if ledger is not None:
+            ledger.append(
+                operation="revocation_writeback",
+                urn=urn,
+                succeeded=receipt.verified,
+                simulated=simulated,
+                detail=receipt.detail,
+                payload=receipt.to_dict(),
+            )
+
+    return tuple(receipts)
 
 
 def perform_reversible_writeback(

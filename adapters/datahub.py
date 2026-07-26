@@ -144,6 +144,8 @@ class DataHubClient(Protocol):
 
     def set_tags(self, urn: str, tags: list[str]) -> None: ...
 
+    def set_properties(self, urn: str, properties: dict[str, str]) -> None: ...
+
 
 class LiveDataHubClient:
     """Live client: MCP for reads, DataHub SDK for writeback.
@@ -297,6 +299,166 @@ class LiveDataHubClient:
             raise DataHubError(str(exc)) from exc
         except Exception as exc:
             raise DataHubUnavailable(f"tag writeback failed: {exc}") from exc
+
+    def set_properties(self, urn: str, properties: dict[str, str]) -> None:
+        """Merge custom properties into the entity's ``datasetProperties``.
+
+        Merged rather than replaced: this project seeds ``artifact_class``,
+        ``purposes``, and the fixture marker, and a governance status write must
+        not silently drop the metadata the policy engine reads.
+        """
+        require_in_namespace(urn, self._namespace, operation="set_properties")
+
+        from adapters.catalog import CatalogError
+
+        existing = self.get_entity(urn)
+        merged = dict(existing.custom_properties) if existing else {}
+        merged.update({str(k): str(v) for k, v in properties.items()})
+
+        try:
+            self._get_catalog().set_custom_properties(
+                urn,
+                name=existing.name if existing else urn,
+                description=existing.description if existing else "",
+                properties=merged,
+            )
+        except CatalogError as exc:
+            raise DataHubError(str(exc)) from exc
+        except NamespaceViolation:
+            raise
+        except Exception as exc:
+            raise DataHubUnavailable(f"property writeback failed: {exc}") from exc
+
+
+# --- durable revocation writeback --------------------------------------
+
+#: Custom-property keys this project writes back. Prefixed so they are
+#: unmistakably ours on an instance shared with four other submissions.
+REVOCATION_STATUS_KEY = "lcb_revocation_status"
+REVOCATION_EVENT_KEY = "lcb_revocation_event"
+REVOCATION_EVIDENCE_KEY = "lcb_evidence_ref"
+REVOCATION_PLAN_KEY = "lcb_plan_hash"
+REVOCATION_VERIFIED_KEY = "lcb_verified_at"
+
+#: Status values, and the tag that carries each one into the DataHub UI.
+STATUS_CONTAINED = "contained"
+STATUS_RESIDUAL = "residual"
+STATUS_ESCALATED = "escalated"
+
+_STATUS_TAGS = {
+    STATUS_CONTAINED: "license-revocation-contained",
+    STATUS_RESIDUAL: "license-revocation-residual",
+    STATUS_ESCALATED: "license-revocation-escalated",
+}
+
+
+@dataclass(frozen=True)
+class RevocationWriteback:
+    """Evidence that a durable governance status reached DataHub."""
+
+    urn: str
+    status: str
+    tag: str
+    aspects: tuple[str, ...]
+    properties: dict[str, str]
+    written_at: datetime
+    verified: bool
+    detail: str
+    #: True when this ran against the in-memory fake rather than a live instance.
+    simulated: bool = False
+
+    def to_dict(self) -> dict[str, Any]:
+        return {
+            "urn": self.urn,
+            "status": self.status,
+            "tag": self.tag,
+            "aspects": list(self.aspects),
+            "properties": dict(self.properties),
+            "written_at": self.written_at.isoformat(),
+            "verified": self.verified,
+            "detail": self.detail,
+            "simulated": self.simulated,
+        }
+
+
+def record_revocation(
+    client: DataHubClient,
+    urn: str,
+    namespace: Namespace,
+    *,
+    status: str,
+    event_id: str,
+    plan_hash: str,
+    evidence_ref: str,
+    simulated: bool = False,
+) -> RevocationWriteback:
+    """Write the durable revocation outcome back to DataHub and verify it.
+
+    Unlike :func:`reversible_tag_writeback`, this is *meant* to persist. The
+    reversible write proves the integration works without leaving state; this
+    one records the governance result that the next person to open the catalog
+    entry needs to see. Both exist because they answer different questions.
+
+    Writes a status tag plus prefixed custom properties, then re-reads to
+    confirm. An unverified write is reported as unverified, never as done.
+
+    Raises:
+        NamespaceViolation: if the target is outside this project's allocation.
+            Raised before anything is attempted.
+        DataHubError: if the status is unknown, or the write itself fails.
+    """
+    require_in_namespace(urn, namespace, operation="record_revocation")
+
+    tag = _STATUS_TAGS.get(status)
+    if tag is None:
+        raise DataHubError(
+            f"unknown revocation status {status!r}; expected one of {sorted(_STATUS_TAGS)}"
+        )
+
+    properties = {
+        REVOCATION_STATUS_KEY: status,
+        REVOCATION_EVENT_KEY: event_id,
+        REVOCATION_PLAN_KEY: plan_hash,
+        REVOCATION_EVIDENCE_KEY: evidence_ref,
+        REVOCATION_VERIFIED_KEY: datetime.now(UTC).isoformat(),
+    }
+
+    prior_tags = list(client.get_tags(urn))
+    # Only one status tag may apply at a time, or an entity contained after an
+    # earlier residual run would carry both and read as ambiguous.
+    kept = [t for t in prior_tags if t not in _STATUS_TAGS.values()]
+    client.set_tags(urn, sorted({*kept, tag}))
+    client.set_properties(urn, properties)
+
+    observed = client.get_entity(urn)
+    notes: list[str] = []
+    verified = observed is not None
+
+    if observed is None:
+        notes.append("entity could not be re-read after the write")
+    else:
+        if tag not in observed.tags:
+            verified = False
+            notes.append(f"status tag {tag!r} not observed; tags are {sorted(observed.tags)}")
+        for key, value in properties.items():
+            if observed.custom_properties.get(key) != value:
+                verified = False
+                notes.append(f"property {key!r} did not land")
+
+    if verified:
+        notes.append(f"status {status!r} written and confirmed by re-read")
+
+    return RevocationWriteback(
+        urn=urn,
+        status=status,
+        tag=tag,
+        aspects=("globalTags", "datasetProperties"),
+        properties=properties,
+        written_at=datetime.now(UTC),
+        verified=verified,
+        detail="; ".join(notes),
+        simulated=simulated,
+    )
 
 
 def reversible_tag_writeback(
@@ -472,12 +634,22 @@ def _encode(urn: str) -> str:
 __all__ = [
     "REQUIRED_CUSTOM_PROPERTIES",
     "REQUIRED_MCP_TOOLS",
+    "REVOCATION_EVENT_KEY",
+    "REVOCATION_EVIDENCE_KEY",
+    "REVOCATION_PLAN_KEY",
+    "REVOCATION_STATUS_KEY",
+    "REVOCATION_VERIFIED_KEY",
+    "STATUS_CONTAINED",
+    "STATUS_ESCALATED",
+    "STATUS_RESIDUAL",
     "DataHubClient",
     "DataHubError",
     "DataHubUnavailable",
     "EntityContext",
     "LineageEdge",
     "LiveDataHubClient",
+    "RevocationWriteback",
     "WritebackReceipt",
+    "record_revocation",
     "reversible_tag_writeback",
 ]

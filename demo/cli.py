@@ -20,12 +20,22 @@ import json
 import sys
 from datetime import UTC, datetime
 
+from adapters.containment import AdapterContext, ContainmentError
+from app.approvals import ApprovalError, ApprovalStore, require_approval
 from app.clients import build_client, is_offline
 from app.config import get_settings
+from app.evidence import build_bundle
+from app.execution import ExecutionError, execute_plan, plan_steps
 from app.namespace import NamespaceViolation
 from app.receipts import ReceiptLedger
-from app.rights import License, Purpose, RightsEvent, RightsState
-from app.workflow import build_impact_plan, perform_reversible_writeback
+from app.rights import Action, License, Purpose, RightsEvent, RightsState
+from app.store import GovernanceStore
+from app.verification import verify_plan
+from app.workflow import (
+    build_impact_plan,
+    perform_reversible_writeback,
+    record_containment_outcomes,
+)
 from demo.estate import EstateError, EstatePaths, build_estate, estate_status, reset_estate
 from demo.graph import REPLACEMENT_SOURCE, SOURCE
 from demo.seed import SeedError, VerificationError, reset, restore, seed
@@ -255,6 +265,157 @@ def cmd_probe(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_contain(args: argparse.Namespace) -> int:
+    """The full judge workflow: plan, approve, execute, verify, write back.
+
+    Without ``--approve`` this stops at the gate and exits 8. That refusal is
+    the demo's most important frame: the plan is complete and correct, and
+    nothing has been touched, because no human has said so.
+    """
+    settings = get_settings()
+    simulated = is_offline(settings)
+    state_dir = settings.ensure_state_dir()
+    client = build_client(settings)
+    ledger = ReceiptLedger(state_dir)
+    store = GovernanceStore(state_dir)
+    approvals = ApprovalStore(store)
+    paths = EstatePaths.under(state_dir)
+
+    _report("contain", simulated)
+
+    event = demo_rights_event()
+    plan = build_impact_plan(client, event, settings.namespace, ledger=ledger, simulated=simulated)
+    approvals.remember_plan(plan)
+
+    print(f"\nPlan {plan.plan_hash()[:16]} for {event.source_urn}")
+    print(f"  decisions {len(plan.decisions)}  escalations {len(plan.escalations)}  "
+          f"steps {len(plan_steps(plan))}")
+    for decision in plan.decisions:
+        actions = ", ".join(a.value for a in decision.actions)
+        print(
+            f"  [{decision.priority:3d}] {actions:<18} {', '.join(decision.rule_ids):<10} "
+            f"{decision.descendant_urn.rsplit(',', 2)[-2]}"
+        )
+
+    if args.approve:
+        approvals.record(plan, approver=args.approver, note=args.note)
+
+    try:
+        approval = require_approval(approvals, plan)
+    except ApprovalError as exc:
+        print(f"\n{exc}", file=sys.stderr)
+        print("Nothing was enforced. Re-run with --approve to record a decision.")
+        return 8
+
+    print(f"\nApproved by {approval.approver} ({approval.approval_id})")
+
+    context = AdapterContext(
+        paths=paths,
+        namespace=settings.namespace,
+        replacement_source_urn=event.replacement_source_urn,
+        actor=approval.approver,
+        fault_injector=_fault_injector(args.fail_adapter),
+    )
+
+    try:
+        execution = execute_plan(
+            plan, approval, context, store, run_id=args.run_id, ledger=ledger
+        )
+    except ExecutionError as exc:
+        print(f"\nExecution refused: {exc}", file=sys.stderr)
+        return 8
+
+    print(f"\nExecution {execution.run_id}: {execution.describe()}")
+    for outcome in execution.outcomes:
+        marker = "resumed" if outcome.resumed else outcome.status
+        print(
+            f"  {marker:<12} {outcome.step.action.value:<11} "
+            f"{outcome.step.urn.rsplit(',', 2)[-2]}"
+        )
+
+    verification = verify_plan(plan, paths)
+    print(f"\nVerification: {verification.describe()}")
+    for probe in verification.probes:
+        print(
+            f"  {'PASS' if probe.passed else 'FAIL'} {probe.method:<24} "
+            f"{probe.urn.rsplit(',', 2)[-2]:<38} {probe.observed[:60]}"
+        )
+
+    bundle = build_bundle(
+        plan,
+        approval=approval,
+        execution=execution,
+        verification=verification,
+        estate=estate_status(paths),
+        simulated=simulated,
+    )
+
+    evidence_dir = state_dir / "evidence" / execution.run_id
+    json_path, markdown_path = bundle.write(evidence_dir)
+
+    writebacks = record_containment_outcomes(
+        client,
+        plan,
+        settings.namespace,
+        verdict=bundle.verdict(),
+        contained_urns=frozenset(bundle.contained_urns),
+        residual_urns=frozenset(r.urn for r in bundle.residual()),
+        evidence_ref=str(json_path),
+        ledger=ledger,
+        simulated=simulated,
+    )
+    verified_writes = sum(1 for w in writebacks if w.verified)
+    print(f"\nDataHub writeback: {verified_writes}/{len(writebacks)} statuses verified")
+    for receipt in writebacks:
+        print(f"  {receipt.status:<10} {receipt.urn.rsplit(',', 2)[-2]}")
+
+    # Rebuild the bundle so the report carries the writeback receipts it just
+    # produced. Writing twice is cheap; a report that omits the writeback would
+    # be missing the last stage of the very workflow it documents.
+    bundle = build_bundle(
+        plan,
+        approval=approval,
+        execution=execution,
+        verification=verification,
+        estate=estate_status(paths),
+        simulated=simulated,
+        writeback={
+            "verified": verified_writes,
+            "attempted": len(writebacks),
+            "receipts": [w.to_dict() for w in writebacks],
+        },
+    )
+    bundle.write(evidence_dir)
+
+    print(f"\nVerdict: {bundle.verdict().upper()}")
+    for entry in bundle.residual():
+        print(f"  residual [{entry.reason}] {entry.urn.rsplit(',', 2)[-2]}: {entry.detail[:70]}")
+    print(f"\nEvidence: {json_path}")
+    print(f"          {markdown_path}")
+
+    if simulated:
+        print("\nNOTE: DataHub reads and writeback ran against the in-memory fake "
+              "and are marked simulated. Local artifact changes above are real.")
+
+    # A verdict short of `contained` is a non-zero exit. Residual exposure that
+    # exits zero is residual exposure nobody notices.
+    return 0 if bundle.verdict() == "contained" else 9
+
+
+def _fault_injector(adapter_name: str | None):
+    """Fail one named adapter, to demonstrate residual-exposure reporting."""
+    if not adapter_name:
+        return None
+
+    def inject(adapter: str, urn: str, action: Action) -> None:
+        if adapter == adapter_name:
+            raise ContainmentError(
+                f"injected failure: {adapter} was told to fail for this run"
+            )
+
+    return inject
+
+
 def cmd_verify(args: argparse.Namespace) -> int:
     settings = get_settings()
     ledger = ReceiptLedger(settings.ensure_state_dir())
@@ -288,6 +449,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     probe_parser.add_argument("--query", default="battery charge")
     probe_parser.set_defaults(func=cmd_probe)
+
+    contain_parser = sub.add_parser(
+        "contain", help="plan, approve, execute, verify, and write back"
+    )
+    contain_parser.add_argument(
+        "--approve",
+        action="store_true",
+        help="record an approval for the generated plan (otherwise the gate refuses)",
+    )
+    contain_parser.add_argument("--approver", default="governance@example.com")
+    contain_parser.add_argument("--note", default="")
+    contain_parser.add_argument(
+        "--run-id", default=None, help="resume an existing run instead of starting a new one"
+    )
+    contain_parser.add_argument(
+        "--fail-adapter",
+        default=None,
+        help="fail one adapter by name, to demonstrate residual-exposure reporting",
+    )
+    contain_parser.set_defaults(func=cmd_contain)
 
     slice_parser = sub.add_parser("slice", help="run the vertical slice")
     slice_parser.add_argument("--output", help="write the plan to a JSON file")
