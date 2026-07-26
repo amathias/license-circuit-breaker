@@ -513,13 +513,26 @@ the full suite before proposing a candidate.
 | Working tree | clean |
 | Local `main` == `origin/main` | yes |
 
-**Promotion caveat.** This candidate is verified *offline only*. Integration gates 3
-and 4 require a live DataHub run that this session could not perform. The 422 that
-rejected `03cda1d` was diagnosed against the pinned registry snapshot, not against
-the shared instance: **no live run has confirmed the fix.** Re-run the live gate
-using "Coordinator recovery steps" above before promoting.
+**Promotion caveat.** This candidate's own change — the payload parsers — is
+verified *offline only*, against payloads the coordinator captured and this suite
+replays. **No live run has exercised it.** Re-run the live gate using
+"Coordinator recovery steps" above before promoting.
 
-Suggested live verification sequence, in a non-judged environment first:
+What the live gate *has* confirmed, on earlier candidates, and what it has not:
+
+| Verified live | On | Still open |
+|---|---|---|
+| Seed writes: 12/12 allowlisted `dataset` URNs active, no foreign ML URNs | `c0574cd` | Seed's own reread verification never ran |
+| MCP transport connects; tool discovery passes | `0674f3a` | — |
+| `get_entities` / `get_lineage` return data (the captured payloads) | `0674f3a` | The parsers consuming them — **this candidate** |
+
+So integration gate 3 (real context read) is partly evidenced and not closed: the
+reads happen, and whether this project can now *use* them is exactly what the next
+gate decides. Gate 4 (verified writeback) remains open.
+
+Suggested live verification sequence **for a fresh environment**. The shared
+instance is not fresh — its 12 fixtures are already active, so use "Coordinator
+recovery steps" above instead, which starts at readiness and does not seed:
 
 ```bash
 APP_ENV=live python -m demo.cli seed      # expect "Verified: 12 entities, 9 edges"
