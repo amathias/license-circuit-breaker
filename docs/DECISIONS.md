@@ -456,6 +456,31 @@ unverified receipt reports `NO` rather than being quietly formatted as success.
 
 ---
 
+## ADR-023: Public-safety is a test, not a checklist
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+This repository is published. `tests/test_public_safety.py` scans the exact file
+set that would ship — `git ls-files --cached --others --exclude-standard`, so it
+covers uncommitted work rather than only what is already in a commit — and fails
+on credential shapes, on `.env`, on runtime state, and on absolute home-directory
+paths.
+
+The home-path check exists because that leak already happened. A captured evidence
+report was generated into a temporary directory, and the absolute path of that
+directory — including the developer's account name — was embedded in the report
+body and in the `lcb_evidence_ref` custom property it recorded into the catalog.
+Nothing failed. It was caught by reading the file. The example is now generated
+with a relative `APP_STATE_DIR`, and a test enforces it.
+
+Credential detection is deliberately narrow, and fixtures must announce themselves
+in the value (`fixture-token`, not `abc123`). A pattern that fired on the word
+"token" would be muted within a week and would then be protecting nothing, and a
+blanket exemption for `tests/` would be worse: a real token pasted into a test is
+published exactly as surely as one pasted into `app/`.
+
+---
+
 ## Versions
 
 **No live DataHub evidence has been captured.** This session was barred from AWS
