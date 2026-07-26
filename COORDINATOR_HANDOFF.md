@@ -61,7 +61,7 @@ live EC2 host from this project chat.
 | DataHub read | **Not verified live.** Client implemented; exercised only against the in-memory fake. |
 | DataHub writeback | **Not verified live.** Durable and reversible writeback both implemented and tested offline. |
 | Blockers | Live DataHub gate requires an AWS/SSM session this session was barred from |
-| Evidence produced | 557 tests, 88.16% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (23 ADRs) |
+| Evidence produced | 558 tests, 88.16% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (23 ADRs) |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -276,9 +276,9 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | `3f92117751baee105c0563078d0f0d6c9311d4df` |
+| Product candidate | `03cda1d970924767aee27ea8c0192edb61efc71f` |
 | Supersedes | `47b3df6db857c8e441a8c72bac810659006ef9b2` (superseded, not rejected) |
-| Tests | 555 fast + 2 slow archive-install = **557 passing** |
+| Tests | 556 fast + 2 slow archive-install = **558 passing** |
 | Coverage | **88.16%** (floor 85%) |
 | Lint | ruff clean |
 | Console typecheck | `tsc --noEmit` clean; `vite build` succeeds |
