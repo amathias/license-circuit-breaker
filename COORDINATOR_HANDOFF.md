@@ -425,7 +425,7 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | the product commit this handoff ships with; its exact SHA is recorded by the `docs:` commit that immediately follows it |
+| Product candidate | `0674f3a985ea400aa6c45385982b37f8adbd517e` |
 | Supersedes | `c0574cd7e8e538c49266b87611a3b6e65cec7442` (**rejected** by the live gate: MCP `TypeError` on readiness; its seed fix was confirmed good) |
 | Tests | 630 fast + 2 slow archive-install = **632 passing** |
 | Coverage | **88.94%** (floor 85%) |
