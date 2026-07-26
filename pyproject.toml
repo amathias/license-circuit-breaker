@@ -43,6 +43,10 @@ packages = ["app", "adapters", "demo", "policy"]
 
 [tool.setuptools.package-data]
 policy = ["*.yaml"]
+# The pinned DataHub entity/aspect registry snapshot. Without it an installed
+# archive can build proposals it cannot check, which is the failure mode the
+# snapshot exists to prevent.
+adapters = ["*.json"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

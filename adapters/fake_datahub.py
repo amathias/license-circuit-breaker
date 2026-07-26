@@ -40,6 +40,9 @@ class FakeDataHubClient:
     #: Set to raise on the next call, to exercise failure paths.
     fail_next_write: bool = False
     fail_next_read: bool = False
+    #: URNs whose creation raises, modelling a server that rejects some entities
+    #: and accepts others -- the shape of a seed that stops partway through.
+    fail_on_create: frozenset[str] = frozenset()
     #: When True, restoration silently does nothing -- models a partial failure
     #: that must surface as residual state rather than a clean receipt.
     swallow_restore: bool = False
@@ -163,6 +166,9 @@ class FakeDataHubClient:
         custom_properties: dict[str, str] | None = None,
         active: bool = True,
     ) -> EntityContext:
+        if urn in self.fail_on_create:
+            raise DataHubError(f"simulated rejection creating {urn!r}")
+
         entity = EntityContext(
             urn=urn,
             entity_type=entity_type,

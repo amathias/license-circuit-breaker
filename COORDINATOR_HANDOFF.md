@@ -36,7 +36,7 @@ live EC2 host from this project chat.
 | Field | Current value |
 |---|---|
 | Status | `in progress` |
-| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline; live gate still open |
+| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. The live gate on `03cda1d` found a release-blocking entity/aspect defect; it is fixed and guarded, and the live gate must be re-run |
 | Verified commit/artifact | See "Deployment candidate" below |
 | Build command | `py -3.13 -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[dev]"` |
 | Console build command | `npm --prefix web install && npm --prefix web run build` — **see the deployment note below** |
@@ -45,7 +45,7 @@ live EC2 host from this project chat.
 | Lint command | `.venv/Scripts/python.exe -m ruff check .` |
 | Coverage command | `.venv/Scripts/python.exe -m pytest tests/ -m "not slow" --cov` (floor 85%) |
 | Typecheck command | `npm --prefix web run typecheck` |
-| Seed command | `python -m demo.cli seed` (emits full catalog entries, then verifies by reread) |
+| Seed command | `python -m demo.cli seed` (emits full catalog entries, then verifies by reread; **idempotent — re-running completes a partial instance in place**) |
 | Reset command | `python -m demo.cli reset` (soft, exactly-allowlisted) |
 | Restore command | `python -m demo.cli restore` (reverses a soft reset) |
 | Slice command | `python -m demo.cli slice [--output plan.json]` |
@@ -60,8 +60,8 @@ live EC2 host from this project chat.
 | Long-running workers | None |
 | DataHub read | **Not verified live.** Client implemented; exercised only against the in-memory fake. |
 | DataHub writeback | **Not verified live.** Durable and reversible writeback both implemented and tested offline. |
-| Blockers | Live DataHub gate requires an AWS/SSM session this session was barred from |
-| Evidence produced | 558 tests, 88.16% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (23 ADRs) |
+| Blockers | Live DataHub gate requires an AWS/SSM session this session was barred from. The 422 was diagnosed and fixed from the pinned registry, not from a live run — the fix is verified offline only |
+| Evidence produced | 611 tests, 88.70% coverage, `examples/` (simulated, regenerated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (25 ADRs) |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -118,6 +118,79 @@ but need their own aspect sets and lineage handling; a uniform dataset model is
 what can be verified deterministically in one milestone, and `artifact_class`
 carries the semantics the policy engine consumes.
 
+> **This decision was documented but not implemented.** `demo/graph.py` minted
+> native `mlModel`/`mlFeatureTable` URNs for three nodes while the seed emitted
+> dataset aspects for all of them, which is what produced the 422 on the live
+> gate. Fixed and enforced — see "Response to the live gate on `03cda1d`" below
+> and ADR-024.
+
+### Response to the live gate on `03cda1d`
+
+The live gate found a release-blocking defect. `python -m demo.cli seed` failed
+closed with **HTTP 422 "Unknown aspect datasetProperties for entity mlModel"**.
+Both halves are fixed, with regressions.
+
+| # | Defect | Resolution | ADR |
+|---|---|---|---|
+| 1 | Entity model contradicted itself: `adapters/catalog.py` and this handoff documented a uniform dataset-URN model, `demo/graph.py` minted native `mlModel`/`mlFeatureTable` URNs for three nodes, and the seed attached `DatasetPropertiesClass` to all of them | Uniform dataset model implemented, not just documented. `DemoNode` derives the entity type from the URN and raises at import on anything but `dataset`; the stale hand-declared `entity_type` field is gone | ADR-024 |
+| 2 | Nothing could catch it: the SDK accepts any aspect beside any URN, and the offline seed wrote to the fake with a hardcoded `entity_type="dataset"` | Every proposal is checked against a pinned snapshot of DataHub's server-side registry, at `build_entity_proposals` and again at `LiveCatalog.emit`. Both seed paths now build the same real SDK proposals, so the fake enforces exactly what GMS enforces | ADR-024 |
+| 3 | A partial seed reported only that it failed — a half-populated shared instance was indistinguishable from an untouched one | Seed attempts every entity, then fails closed with a `SeedResult` naming what landed, what failed with which error, what was never attempted, and which edges were skipped. Written to `$APP_STATE_DIR/seed-partial.json`; CLI exits 7 | ADR-025 |
+| 4 | The only documented cleanup was `reset`, which refuses a partial target set by design — leaving no recovery short of a global cleanup | Seed is the recovery and is idempotent by construction. Both reset refusals now name it and say so | ADR-025 |
+
+**Why the uniform model was preserved rather than replaced.** The pinned registry
+shows DataHub 1.6.0 registers on `mlModel` and `mlFeatureTable` neither
+`datasetProperties` — which carries `artifact_class`, `purposes`, `exposure` and
+`criticality`, the entire input to the policy engine — nor `upstreamLineage`,
+which is the edge set the impact analysis walks. So the 422 was the first of at
+least two: the lineage proposals would have failed next. Native support means
+`mlModelProperties`/`mlFeatureTableProperties` plus a separate ML lineage
+mechanism, **verified live**, which this session could not do. Implementing half
+of it would have been worse than either end state. The cost is stated in ADR-024
+and disclosed in `README.md`: the model and feature table appear as datasets on
+the `mlflow` and `feast` platforms.
+
+**The pinned registry.** `adapters/datahub_entity_registry_1_6_0.json` is derived
+from `metadata-models/src/main/resources/entity-registry.yml` at DataHub tag
+`v1.6.0`, matching the `acryl-datahub==1.6.0.15` pin. It is stored in the shape
+`EntityAspectSpecs.to_dict()` produces, so the SDK's own type parses it and a
+live server's registry can be diffed against it with no translation layer. A test
+asserts the snapshot and the installed SDK describe the same DataHub, so
+upgrading one without the other fails the build.
+
+#### Coordinator recovery steps
+
+The shared instance holds a partial fixture set from the failed run. **Do not run
+`reset` and do not run any global cleanup.**
+
+1. Deploy the SHA in "Deployment candidate" below.
+2. Confirm reset is *not* needed. `python -m demo.cli reset` will refuse: the
+   sentinel is deliberately absent after a partial seed. That refusal is correct
+   and now names the recovery.
+3. Re-run the seed. It is idempotent and completes the instance in place:
+   ```bash
+   APP_ENV=live python -m demo.cli seed     # expect "Verified: 12 entities, 9 edges", exit 0
+   ```
+4. If it exits `7` again, read `$APP_STATE_DIR/seed-partial.json`. It names every
+   entity that landed, every one that failed with its error, and everything not
+   attempted. Attach that file rather than terminal output.
+5. Then continue the live sequence under "Deployment candidate".
+
+**On the entities already present.** The failed run materialized the fixture
+nodes preceding the first ML URN — `license.reviews.partner_feed`,
+`license.reviews.approved_feed`, and `license.reviews.normalized`. All three are
+`dataset` URNs that this fix does not rename, so the reseed simply re-upserts
+them. This project emitted 13 aspect proposals across those three entities before
+the 422; DataHub adds key and browse-path aspects of its own, so the row count
+you observed will be higher and is expected — we are not able to reconcile the
+exact figure from here and are not claiming to.
+
+**One thing to verify.** GMS rejected the *first* proposal for each ML URN, so no
+`mlModel` or `mlFeatureTable` entity should exist. This could not be confirmed
+from this session. If any do exist, they fall outside the new allowlist, which
+means this project's `reset` will not touch them by design — they would need
+coordinator removal. Checking is a read: search the instance for
+`urn:li:mlModel:` and `urn:li:mlFeatureTable:` under the `license.` prefix.
+
 ### Milestone B contents
 
 - **Integration client** (`adapters/datahub.py`): MCP for reads via
@@ -151,6 +224,14 @@ carries the semantics the policy engine consumes.
 - **Public-safety gate** (`tests/test_public_safety.py`): scans the exact
   shippable file set for credential shapes, `.env`, runtime state, build output,
   and absolute home-directory paths (ADR-023).
+- **Entity/aspect contract gate** (`tests/test_entity_aspect_contract.py`): builds
+  every proposal the seed emits as a real SDK object, round-trips each through
+  the emitter's own `to_obj`/`from_obj`, and checks every `(entityType,
+  aspectName)` pair against the pinned registry. No fake participates, so no fake
+  can satisfy it (ADR-024).
+- **Seed recovery gate** (`tests/test_seed_recovery.py`): partial-seed evidence,
+  sentinel withholding, edge skipping, and idempotent reseed from partial and
+  soft-removed states (ADR-025).
 - **Coverage gate**: `pytest --cov`, floor 85%, `pytest-cov` declared in the dev
   extras.
 - **`contain` command regressions** (`tests/test_cli.py`): the exit codes the
@@ -165,8 +246,10 @@ carries the semantics the policy engine consumes.
 `0` success · `2` refused (sentinel missing, or target set not exactly the
 allowlist) · `3` refused by the namespace guard · `4` seed emitted but unverifiable
 · `5` partial reset/restore failure · `6` slice completed but writeback was not both
-verified and restored · `8` `contain` refused by the approval gate, nothing enforced
-· `9` `contain` completed with a verdict short of `contained`.
+verified and restored · `7` **partial seed: some entities materialized and others
+did not; evidence written to `$APP_STATE_DIR/seed-partial.json`** · `8` `contain`
+refused by the approval gate, nothing enforced · `9` `contain` completed with a
+verdict short of `contained`.
 
 `9` is the expected result of the documented demo. One descendant is reachable
 only through a lineage path DataHub cannot complete, so it escalates. A `contain`
@@ -224,6 +307,11 @@ configuration. No secret values appear in `.env.example` or this document.
 | Soft reset | `GlobalTags` (cleared) + `Status(removed=True)` | `license.` + fixture marker only |
 | Restore | full seed aspect set | `license.` + fixture marker only |
 
+Every proposal in this table is checked against the pinned DataHub 1.6.0
+entity/aspect registry before it is built and again before it is emitted. An
+aspect an entity type does not register raises `AspectContractError` offline
+instead of returning 422 from GMS.
+
 Entities created: 12 (11 graph nodes + 1 sentinel), all `dataset` URNs prefixed
 `license.` carrying an `artifact_class` custom property, all tagged
 `project-license-circuit-breaker` and `lcb-demo-fixture`, all assigned the
@@ -276,18 +364,22 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | `03cda1d970924767aee27ea8c0192edb61efc71f` |
-| Supersedes | `47b3df6db857c8e441a8c72bac810659006ef9b2` (superseded, not rejected) |
-| Tests | 556 fast + 2 slow archive-install = **558 passing** |
-| Coverage | **88.16%** (floor 85%) |
+| Product candidate | the product commit this handoff ships with; its exact SHA is recorded by the `docs:` commit that immediately follows it |
+| Supersedes | `03cda1d970924767aee27ea8c0192edb61efc71f` (**rejected** by the live gate: HTTP 422 on seed) |
+| Tests | 609 fast + 2 slow archive-install = **611 passing** |
+| Coverage | **88.70%** (floor 85%) |
 | Lint | ruff clean |
 | Console typecheck | `tsc --noEmit` clean; `vite build` succeeds |
+| Packaging gate | passing, including the registry snapshot in the installed archive |
 | Public-safety gate | passing |
 | Working tree | clean |
 | Local `main` == `origin/main` | yes |
 
 **Promotion caveat.** This candidate is verified *offline only*. Integration gates 3
-and 4 require a live DataHub run that this session could not perform.
+and 4 require a live DataHub run that this session could not perform. The 422 that
+rejected `03cda1d` was diagnosed against the pinned registry snapshot, not against
+the shared instance: **no live run has confirmed the fix.** Re-run the live gate
+using "Coordinator recovery steps" above before promoting.
 
 Suggested live verification sequence, in a non-judged environment first:
 
@@ -304,6 +396,11 @@ curl -s -o /dev/null -w '%{http_code}' $APP_PUBLIC_URL/   # 200 if the console w
 A non-zero exit from `slice` means the writeback was not both verified and
 restored; treat the writeback gate as failed and check the receipt's
 `residual_risk` before rerunning.
+
+Exit `7` from `seed` means a partial seed. Read
+`$APP_STATE_DIR/seed-partial.json` and re-run `seed`; it is idempotent and needs
+no cleanup first. Do not run `reset` to recover — see "Coordinator recovery
+steps" above.
 
 ### Known limitations
 

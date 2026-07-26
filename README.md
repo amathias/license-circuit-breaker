@@ -154,6 +154,13 @@ cannot seed, slice, or load a single rule is not a working package.
 
 - The receipt ledger is hash-chained and tamper-**evident**, not tamper-proof.
 - Purpose metadata is read from custom properties this project seeds.
+- Every fixture entity is a `dataset` URN carrying an `artifact_class` custom property, so
+  the model and the feature table appear in DataHub as datasets on the `mlflow` and `feast`
+  platforms rather than as native `mlModel` and `mlFeatureTable` entities. DataHub 1.6.0
+  registers neither `datasetProperties` nor `upstreamLineage` on those types, so a native
+  entity cannot carry the properties the policy engine reads or the lineage the impact
+  analysis walks. The trade-off and its cost are recorded in
+  [ADR-024](./docs/DECISIONS.md).
 - Containment covers descendants represented in the DataHub graph. Untracked copies and
   offline extracts are not addressed, and stopping a model from serving is not proof that
   it has unlearned its training data.

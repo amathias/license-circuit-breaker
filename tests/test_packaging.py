@@ -82,6 +82,13 @@ class TestPackageDeclaration:
         assert "package-data" in content
         assert "*.yaml" in content
 
+    def test_ships_the_entity_registry_as_package_data(self):
+        # A wheel without it builds proposals it cannot check, which is exactly
+        # the failure the snapshot exists to prevent.
+        content = (REPO / "pyproject.toml").read_text(encoding="utf-8")
+        assert "adapters = [" in content
+        assert "*.json" in content
+
     def test_declares_a_console_script(self):
         content = (REPO / "pyproject.toml").read_text(encoding="utf-8")
         assert "[project.scripts]" in content
@@ -92,6 +99,12 @@ class TestPackageDeclaration:
         from policy import rules_path
 
         assert rules_path().is_file()
+
+    def test_entity_registry_resolves_through_the_package(self):
+        from adapters.entity_registry import REGISTRY_PATH, get_registry
+
+        assert REGISTRY_PATH.is_file()
+        assert get_registry().supports("dataset", "datasetProperties")
 
 
 @pytest.mark.slow
@@ -114,6 +127,9 @@ class TestCleanArchiveInstall:
         for package in ("app", "adapters", "demo", "policy"):
             assert (src / package).is_dir(), f"{package} missing from the archive"
         assert (src / "policy" / "rules.yaml").is_file(), "rule table missing from the archive"
+        assert (
+            src / "adapters" / "datahub_entity_registry_1_6_0.json"
+        ).is_file(), "entity/aspect registry snapshot missing from the archive"
 
         # 2. Install into an isolated environment.
         venv = tmp_path / "venv"
@@ -131,9 +147,13 @@ class TestCleanArchiveInstall:
             "from policy import rules_path;"
             "from demo.cli import main;"
             "from demo.graph import SENTINEL_URN;"
+            "from adapters.entity_registry import get_registry;"
             "t = load_policy();"
             "assert len(t.rules) > 0, 'no rules loaded';"
             "assert rules_path().is_file(), 'rule table not installed';"
+            "r = get_registry();"
+            "assert r.supports('dataset', 'datasetProperties'), 'registry not installed';"
+            "assert not r.supports('mlModel', 'datasetProperties'), 'registry is wrong';"
             "print('IMPORT_OK', len(t.rules))"
         )
         result = _run([str(python), "-c", probe], cwd=tmp_path)

@@ -38,7 +38,7 @@ from app.workflow import (
 )
 from demo.estate import EstateError, EstatePaths, build_estate, estate_status, reset_estate
 from demo.graph import REPLACEMENT_SOURCE, SOURCE
-from demo.seed import SeedError, VerificationError, reset, restore, seed
+from demo.seed import PartialSeedError, SeedError, VerificationError, reset, restore, seed
 from demo.serving import ServingRefused, fetch_export, predict, search
 
 
@@ -76,6 +76,29 @@ def _report(label: str, simulated: bool) -> None:
     print(f"[{label}] mode: {mode}")
 
 
+def _write_partial_seed_evidence(settings, result) -> str | None:
+    """Persist partial-seed evidence next to the other run artifacts.
+
+    Returns the path written, or None if it could not be written. A failure to
+    record evidence must not mask the seed failure that produced it, so this
+    never raises.
+    """
+    try:
+        state_dir = settings.ensure_state_dir()
+        target = state_dir / "seed-partial.json"
+        payload = {
+            "recorded_at": datetime.now(UTC).isoformat(),
+            "simulated": is_offline(settings),
+            "urn_prefix": settings.datahub_urn_prefix,
+            **result.to_dict(),
+        }
+        target.write_text(json.dumps(payload, indent=2) + "\n", encoding="utf-8")
+        return str(target)
+    except OSError as exc:
+        print(f"(could not write partial-seed evidence: {exc})", file=sys.stderr)
+        return None
+
+
 def cmd_seed(args: argparse.Namespace) -> int:
     settings = get_settings()
     client = build_client(settings)
@@ -83,6 +106,27 @@ def cmd_seed(args: argparse.Namespace) -> int:
 
     try:
         result = seed(client, settings.namespace)
+    except PartialSeedError as exc:
+        # Some entities landed and some did not. Report exactly which, so the
+        # instance can be told apart from an untouched one, and record it.
+        report = exc.result
+        print(f"Seed incomplete: {report.describe()}", file=sys.stderr)
+        for failure in report.failed:
+            print(f"  FAILED {failure.describe()}", file=sys.stderr)
+        for urn in report.not_attempted:
+            print(f"  NOT ATTEMPTED {urn}", file=sys.stderr)
+        for upstream, downstream in report.skipped_edges:
+            print(f"  EDGE SKIPPED {upstream} -> {downstream}", file=sys.stderr)
+        print(f"  MATERIALIZED {len(report.created)} entities", file=sys.stderr)
+        written = _write_partial_seed_evidence(settings, report)
+        if written:
+            print(f"Partial-seed evidence: {written}", file=sys.stderr)
+        print(
+            "Recovery: re-run `python -m demo.cli seed`. It is idempotent and completes "
+            "a partial instance in place. Do not run reset first.",
+            file=sys.stderr,
+        )
+        return 7
     except VerificationError as exc:
         # Emitting without verifying would report success for writes that never
         # landed, so a failed reread is a failed seed.

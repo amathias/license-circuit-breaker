@@ -6,11 +6,19 @@ and lineage -- as ``MetadataChangeProposalWrapper`` objects through the DataHub
 
 Entity model: everything is a ``dataset`` URN carrying an ``artifact_class``
 custom property. Models, feature tables, indexes, APIs, and exports are all
-represented this way. Native ``mlModel`` / ``mlFeatureTable`` entities would be a
-better semantic fit, but they need their own aspect sets and lineage handling; a
-uniform dataset model is what can be verified deterministically against a live
-instance in one milestone. The ``artifact_class`` property carries the semantics
-the policy engine needs.
+represented this way. Native ``mlModel`` / ``mlFeatureTable`` entities are a
+better semantic fit, but DataHub 1.6.0 registers neither ``datasetProperties``
+nor ``upstreamLineage`` on them, so they cannot carry the property set the policy
+engine reads or the lineage the impact analysis walks. Supporting them means
+``mlModelProperties`` / ``mlFeatureTableProperties`` and a separate ML lineage
+mechanism, verified live. Until that is done, the uniform dataset model is the
+one that works, and ``artifact_class`` carries the semantics. See
+``docs/DECISIONS.md`` ADR-024.
+
+Every proposal is checked against the pinned entity/aspect registry before it
+leaves this module. The SDK does not do this: it derives ``entityType`` from the
+URN and accepts any aspect beside it, so a mismatch is only caught by GMS, as an
+HTTP 422 on the first live write.
 
 Domain and tag *controls* -- the domain entity and the tag entities themselves --
 are shared, coordinator-owned scaffolding. This module references them and never
@@ -22,6 +30,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import TYPE_CHECKING, Any
 
+from adapters.entity_registry import require_supported_aspects
 from app.namespace import Namespace, require_in_namespace
 
 if TYPE_CHECKING:  # pragma: no cover
@@ -30,6 +39,20 @@ if TYPE_CHECKING:  # pragma: no cover
 
 class CatalogError(Exception):
     """Raised when a catalog operation cannot be completed or verified."""
+
+
+def guard_proposals(proposals: list[Any], operation: str) -> list[Any]:
+    """Reject any proposal whose entity type does not register its aspect.
+
+    Checks the proposals themselves rather than a parallel list of aspect names,
+    so the guard cannot drift from what is actually emitted.
+
+    Raises:
+        AspectContractError: naming every unsupported (entity type, aspect) pair.
+    """
+    for proposal in proposals:
+        require_supported_aspects(proposal.entityUrn, [proposal.aspectName], operation=operation)
+    return proposals
 
 
 @dataclass(frozen=True)
@@ -89,6 +112,74 @@ def tag_urn(tag: str) -> str:
     return f"urn:li:tag:{tag}"
 
 
+def build_entity_proposals(spec: EntitySpec) -> list[Any]:
+    """Build the complete aspect set for one entity, as real SDK proposals.
+
+    Module-level and namespace-free on purpose. The offline seed path writes
+    straight into the in-memory fake and never constructs a proposal, which is
+    how a dataset-only aspect set on ML URNs passed every offline test and failed
+    on the first live write. Both paths now build the same objects through this
+    function, so the fake cannot be more permissive than the emitter.
+
+    Raises:
+        AspectContractError: if the entity type does not register one of the
+            aspects, per the pinned registry.
+    """
+    from datahub.emitter.mcp import MetadataChangeProposalWrapper
+    from datahub.metadata.schema_classes import (
+        DatasetPropertiesClass,
+        DomainsClass,
+        GlobalTagsClass,
+        StatusClass,
+        TagAssociationClass,
+    )
+
+    proposals = [
+        MetadataChangeProposalWrapper(
+            entityUrn=spec.urn,
+            aspect=DatasetPropertiesClass(
+                name=spec.name,
+                description=spec.description,
+                customProperties=dict(spec.custom_properties),
+            ),
+        ),
+        # Explicitly active. Soft reset flips this to removed=True, so seed
+        # must assert the active state rather than relying on a default.
+        MetadataChangeProposalWrapper(entityUrn=spec.urn, aspect=StatusClass(removed=False)),
+        MetadataChangeProposalWrapper(
+            entityUrn=spec.urn,
+            aspect=GlobalTagsClass(tags=[TagAssociationClass(tag=tag_urn(t)) for t in spec.tags]),
+        ),
+        MetadataChangeProposalWrapper(
+            entityUrn=spec.urn, aspect=DomainsClass(domains=[spec.domain_urn])
+        ),
+    ]
+
+    if spec.upstreams:
+        proposals.append(_build_lineage(spec.urn, spec.upstreams))
+
+    return guard_proposals(proposals, operation="catalog-upsert")
+
+
+def _build_lineage(urn: str, upstreams: tuple[str, ...]) -> Any:
+    from datahub.emitter.mcp import MetadataChangeProposalWrapper
+    from datahub.metadata.schema_classes import (
+        DatasetLineageTypeClass,
+        UpstreamClass,
+        UpstreamLineageClass,
+    )
+
+    return MetadataChangeProposalWrapper(
+        entityUrn=urn,
+        aspect=UpstreamLineageClass(
+            upstreams=[
+                UpstreamClass(dataset=u, type=DatasetLineageTypeClass.TRANSFORMED)
+                for u in upstreams
+            ]
+        ),
+    )
+
+
 class LiveCatalog:
     """Emits and verifies catalog state through the DataHub SDK.
 
@@ -124,70 +215,25 @@ class LiveCatalog:
 
         Raises:
             NamespaceViolation: if the entity or any upstream is out of namespace.
+            AspectContractError: if the entity type does not register one of the
+                aspects. Raised here, before emission, so the contract breaks at
+                build time rather than as a 422 halfway through a live seed.
         """
         require_in_namespace(spec.urn, self._namespace, operation="catalog-upsert")
         for upstream in spec.upstreams:
             require_in_namespace(upstream, self._namespace, operation="catalog-lineage")
 
-        from datahub.emitter.mcp import MetadataChangeProposalWrapper
-        from datahub.metadata.schema_classes import (
-            DatasetPropertiesClass,
-            DomainsClass,
-            GlobalTagsClass,
-            StatusClass,
-            TagAssociationClass,
-        )
-
-        proposals = [
-            MetadataChangeProposalWrapper(
-                entityUrn=spec.urn,
-                aspect=DatasetPropertiesClass(
-                    name=spec.name,
-                    description=spec.description,
-                    customProperties=dict(spec.custom_properties),
-                ),
-            ),
-            # Explicitly active. Soft reset flips this to removed=True, so seed
-            # must assert the active state rather than relying on a default.
-            MetadataChangeProposalWrapper(entityUrn=spec.urn, aspect=StatusClass(removed=False)),
-            MetadataChangeProposalWrapper(
-                entityUrn=spec.urn,
-                aspect=GlobalTagsClass(
-                    tags=[TagAssociationClass(tag=tag_urn(t)) for t in spec.tags]
-                ),
-            ),
-            MetadataChangeProposalWrapper(
-                entityUrn=spec.urn, aspect=DomainsClass(domains=[spec.domain_urn])
-            ),
-        ]
-
-        if spec.upstreams:
-            proposals.append(self._build_lineage(spec.urn, spec.upstreams))
-
-        return proposals
-
-    def _build_lineage(self, urn: str, upstreams: tuple[str, ...]) -> Any:
-        from datahub.emitter.mcp import MetadataChangeProposalWrapper
-        from datahub.metadata.schema_classes import (
-            DatasetLineageTypeClass,
-            UpstreamClass,
-            UpstreamLineageClass,
-        )
-
-        return MetadataChangeProposalWrapper(
-            entityUrn=urn,
-            aspect=UpstreamLineageClass(
-                upstreams=[
-                    UpstreamClass(dataset=u, type=DatasetLineageTypeClass.TRANSFORMED)
-                    for u in upstreams
-                ]
-            ),
-        )
+        return build_entity_proposals(spec)
 
     # -- emission -------------------------------------------------------
 
     def emit(self, proposals: list[Any]) -> int:
-        """Emit proposals. Returns the count emitted."""
+        """Emit proposals. Returns the count emitted.
+
+        Guards again here rather than trusting the caller: this is the last point
+        before the network, and every path into it must be covered.
+        """
+        guard_proposals(proposals, operation="catalog-emit")
         emitter = self._get_emitter()
         for proposal in proposals:
             emitter.emit(proposal)

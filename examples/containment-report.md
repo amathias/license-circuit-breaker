@@ -1,8 +1,8 @@
 # Containment report
 
 **Verdict:** `escalated`  
-**Generated:** 2026-07-26T01:43:56.063276+00:00  
-**Plan:** `fd7fcb6fdc8d1cf6ae603368b6c9f42c42acb48fc5881656e4c85f5a6031f0a2`
+**Generated:** 2026-07-26T16:05:18.274620+00:00  
+**Plan:** `6de8873be5d560add4e29c92fce3bf4f62e58b1c78d5208c91fefb75dc5f7e8f`
 
 > **SIMULATED DATAHUB RUN.** The catalog reads and the writeback in this report ran against the deterministic in-memory DataHub substitute, not a live instance. The local artifact changes below are real and were probed directly.
 
@@ -10,7 +10,7 @@
 
 - **Event:** `evt-lcb-demo-001` v1
 - **Source:** `urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)`
-- **Effective:** 2026-07-26T01:43:44.087014+00:00
+- **Effective:** 2026-07-26T16:05:02.893683+00:00
 - **Reason:** Partner revoked training and retrieval rights effective immediately
 - **Purposes lost:** retrieval, training
 - **Replacement source:** `urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)`
@@ -24,8 +24,8 @@
 | 65 | `license.models.review_sentiment` | model | retrain, replace | LCB-R030 |
 | 60 | `license.reviews.legacy_snapshot` | dataset | escalate | LCB-R001 |
 | 50 | `license.reviews.normalized` | dataset | rebuild | LCB-R020 |
-| 50 | `license.indexes.review_search` | vector_index | purge, rebuild | LCB-R040 |
 | 50 | `license.features.review_sentiment` | feature | rebuild | LCB-R022 |
+| 50 | `license.indexes.review_search` | vector_index | purge, rebuild | LCB-R040 |
 | 40 | `license.reports.review_volume` | dataset | no_action | LCB-R010 |
 | 25 | `license.exports.reviews_extract` | export | quarantine | LCB-R051 |
 
@@ -33,9 +33,9 @@
 
 - **Decision:** approved
 - **Approver:** governance@example.com
-- **At:** 2026-07-26T01:43:44.280255+00:00
-- **Approval:** `apr-6c38bf503226`
-- **Bound to plan:** `fd7fcb6fdc8d1cf6ae603368b6c9f42c42acb48fc5881656e4c85f5a6031f0a2`
+- **At:** 2026-07-26T16:05:03.438077+00:00
+- **Approval:** `apr-b9889399f9b3`
+- **Bound to plan:** `6de8873be5d560add4e29c92fce3bf4f62e58b1c78d5208c91fefb75dc5f7e8f`
 - **Note:** Reviewed the lineage evidence and the cited rules.
 
 ## Execution
@@ -60,11 +60,11 @@
 | Artifact | Probe | Result | Observed |
 |---|---|---|---|
 | `license.reviews.normalized` | table_scan | PASS | 20 rows, none from the partner feed |
+| `license.features.review_sentiment` | table_scan | PASS | 20 rows, none from the partner feed |
 | `license.exports.reviews_extract` | export_access_probe | PASS | refused: the published export has been quarantined and is no longer retrievable at its published path |
+| `license.models.review_sentiment` | training_manifest_scan | PASS | serving v2-approved trained on 20 rows from ['urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)'] |
 | `license.services.predict_api` | endpoint_probe | PASS | refused: frozen by approved containment action, actor=governance@example.com |
 | `license.indexes.review_search` | index_manifest_scan | PASS | 20 documents indexed, none from the partner feed |
-| `license.features.review_sentiment` | table_scan | PASS | 20 rows, none from the partner feed |
-| `license.models.review_sentiment` | training_manifest_scan | PASS | serving v2-approved trained on 20 rows from ['urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)'] |
 | `license.reports.review_volume` | availability_probe | PASS | 4 rows still queryable |
 | `license.models.approved_sentiment` | availability_probe | PASS | serving v1 from ['urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)'] |
 
@@ -86,8 +86,8 @@
 | `license.models.review_sentiment` | contained | `license-revocation-contained` | globalTags, datasetProperties | yes |
 | `license.reviews.legacy_snapshot` | escalated | `license-revocation-escalated` | globalTags, datasetProperties | yes |
 | `license.reviews.normalized` | contained | `license-revocation-contained` | globalTags, datasetProperties | yes |
-| `license.indexes.review_search` | contained | `license-revocation-contained` | globalTags, datasetProperties | yes |
 | `license.features.review_sentiment` | contained | `license-revocation-contained` | globalTags, datasetProperties | yes |
+| `license.indexes.review_search` | contained | `license-revocation-contained` | globalTags, datasetProperties | yes |
 | `license.exports.reviews_extract` | contained | `license-revocation-contained` | globalTags, datasetProperties | yes |
 
 ## Limitations

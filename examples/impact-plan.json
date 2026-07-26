@@ -13,8 +13,8 @@
           "hops": [
             "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
             "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
-            "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
-            "urn:li:mlModel:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)",
             "urn:li:dataset:(urn:li:dataPlatform:rest-api,license.services.predict_api,PROD)"
           ]
         }
@@ -32,7 +32,7 @@
         "replace"
       ],
       "artifact_class": "model",
-      "descendant_urn": "urn:li:mlModel:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)",
       "missing_evidence": [],
       "paths": [
         {
@@ -40,8 +40,8 @@
           "hops": [
             "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
             "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
-            "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
-            "urn:li:mlModel:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)"
+            "urn:li:dataset:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:mlflow,license.models.review_sentiment,PROD)"
           ]
         }
       ],
@@ -103,6 +103,30 @@
     },
     {
       "actions": [
+        "rebuild"
+      ],
+      "artifact_class": "feature",
+      "descendant_urn": "urn:li:dataset:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
+      "missing_evidence": [],
+      "paths": [
+        {
+          "complete": true,
+          "hops": [
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
+            "urn:li:dataset:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)"
+          ]
+        }
+      ],
+      "priority": 50,
+      "rationale": "Feature table rebuildable from an approved source.",
+      "requires_approval": true,
+      "rule_ids": [
+        "LCB-R022"
+      ]
+    },
+    {
+      "actions": [
         "purge",
         "rebuild"
       ],
@@ -124,30 +148,6 @@
       "requires_approval": true,
       "rule_ids": [
         "LCB-R040"
-      ]
-    },
-    {
-      "actions": [
-        "rebuild"
-      ],
-      "artifact_class": "feature",
-      "descendant_urn": "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)",
-      "missing_evidence": [],
-      "paths": [
-        {
-          "complete": true,
-          "hops": [
-            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",
-            "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.normalized,PROD)",
-            "urn:li:mlFeatureTable:(urn:li:dataPlatform:feast,license.features.review_sentiment,PROD)"
-          ]
-        }
-      ],
-      "priority": 50,
-      "rationale": "Feature table rebuildable from an approved source.",
-      "requires_approval": true,
-      "rule_ids": [
-        "LCB-R022"
       ]
     },
     {
@@ -202,7 +202,7 @@
   ],
   "event": {
     "approver": null,
-    "effective_at": "2026-07-25T21:45:58.313946Z",
+    "effective_at": "2026-07-26T16:03:08.452300Z",
     "event_id": "evt-lcb-demo-001",
     "evidence_ref": null,
     "new": {
@@ -226,13 +226,13 @@
       "name": "Partner review feed agreement",
       "permitted_purposes": [
         "training",
-        "retrieval",
-        "analytics"
+        "analytics",
+        "retrieval"
       ],
       "state": "approved"
     },
     "reason": "Partner revoked training and retrieval rights effective immediately",
-    "recorded_at": "2026-07-25T21:45:58.314056Z",
+    "recorded_at": "2026-07-26T16:03:08.452411Z",
     "replacement_source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.approved_feed,PROD)",
     "requester": "governance@example.com",
     "source_urn": "urn:li:dataset:(urn:li:dataPlatform:duckdb,license.reviews.partner_feed,PROD)",

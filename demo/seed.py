@@ -18,6 +18,18 @@ Reset refuses unless all of these hold, and fails closed on any of them:
 3. Every target carries the fixture marker.
 4. Every target passes the **namespace guard**.
 
+Seed is **idempotent and self-healing**. Every entity is upserted with its full
+aspect set on every run, so re-running seed over a partially populated instance
+converges it to the complete fixture set. That is the supported recovery from an
+interrupted seed: there is no cleanup step, and reset is not one. Reset
+deliberately refuses a partial target set, so an operator who reaches for it
+after a failed seed finds a refusal rather than a recovery.
+
+A seed that cannot complete records **which entities landed, which failed and
+why, and which were never attempted**, then fails closed with that report
+attached. An interrupted seed that only reported "it failed" left an operator
+unable to tell a half-populated instance from an untouched one.
+
 Domain and tag *controls* are shared coordinator-owned scaffolding. Nothing here
 creates, mutates, or removes them.
 """
@@ -25,9 +37,11 @@ creates, mutates, or removes them.
 from __future__ import annotations
 
 from dataclasses import dataclass
+from typing import Any
 
-from adapters.catalog import EntitySpec, domain_urn
+from adapters.catalog import EntitySpec, build_entity_proposals, domain_urn
 from adapters.datahub import DataHubClient, EntityContext
+from adapters.entity_registry import entity_type_of
 from app.namespace import Namespace, NamespaceViolation, assert_scoped_reset, require_in_namespace
 from demo.graph import EDGES, FIXTURE_MARKER, NODES, SENTINEL_URN, all_urns
 
@@ -40,6 +54,31 @@ class VerificationError(SeedError):
     """Raised when emitted catalog state could not be read back."""
 
 
+class PartialSeedError(SeedError):
+    """Raised when some entities materialized and others did not.
+
+    Carries the full :class:`SeedResult` so the caller can report exactly what
+    landed rather than only that something went wrong.
+    """
+
+    def __init__(self, message: str, result: SeedResult) -> None:
+        super().__init__(message)
+        self.result = result
+
+
+@dataclass(frozen=True)
+class SpecFailure:
+    """One entity that could not be materialized, and why."""
+
+    urn: str
+    entity_type: str
+    error_type: str
+    error: str
+
+    def describe(self) -> str:
+        return f"{self.urn} [{self.entity_type}]: {self.error_type}: {self.error}"
+
+
 @dataclass(frozen=True)
 class SeedResult:
     created: tuple[str, ...]
@@ -47,10 +86,68 @@ class SeedResult:
     sentinel_urn: str
     verified_entities: tuple[str, ...] = ()
     verified_edges: tuple[tuple[str, str], ...] = ()
+    #: Entities that failed to materialize. Empty on a complete seed.
+    failed: tuple[SpecFailure, ...] = ()
+    #: Entities skipped because an earlier failure made the run partial.
+    not_attempted: tuple[str, ...] = ()
+    #: Edges not declared because one of their endpoints failed.
+    skipped_edges: tuple[tuple[str, str], ...] = ()
+    #: The sentinel is written only after every other entity lands, so its
+    #: presence means the fixture set is complete.
+    sentinel_written: bool = False
 
     @property
     def count(self) -> int:
         return len(self.created)
+
+    @property
+    def complete(self) -> bool:
+        return not self.failed and not self.not_attempted
+
+    def describe(self) -> str:
+        parts = [f"{len(self.created)} materialized"]
+        if self.failed:
+            parts.append(f"{len(self.failed)} FAILED")
+        if self.not_attempted:
+            parts.append(f"{len(self.not_attempted)} not attempted")
+        if self.skipped_edges:
+            parts.append(f"{len(self.skipped_edges)} edges skipped")
+        parts.append(f"sentinel {'written' if self.sentinel_written else 'withheld'}")
+        return ", ".join(parts)
+
+    def to_dict(self) -> dict[str, Any]:
+        """Serializable partial-seed evidence.
+
+        Written to disk by the CLI so a failed live seed leaves an artifact an
+        operator can act on, rather than only a message on a terminal that has
+        since scrolled away.
+        """
+        return {
+            "complete": self.complete,
+            "marker": self.marker,
+            "sentinel_urn": self.sentinel_urn,
+            "sentinel_written": self.sentinel_written,
+            "materialized": list(self.created),
+            "failed": [
+                {
+                    "urn": f.urn,
+                    "entity_type": f.entity_type,
+                    "error_type": f.error_type,
+                    "error": f.error,
+                }
+                for f in self.failed
+            ],
+            "not_attempted": list(self.not_attempted),
+            "skipped_edges": [list(e) for e in self.skipped_edges],
+            "verified_entities": list(self.verified_entities),
+            "verified_edges": [list(e) for e in self.verified_edges],
+            "recovery": (
+                "Re-run `python -m demo.cli seed`. Seed is idempotent: it upserts every "
+                "entity's full aspect set on every run, so it completes a partial instance "
+                "in place. Do not run reset first -- reset refuses a partial target set by "
+                "design, and no global cleanup is required."
+            ),
+        }
 
 
 @dataclass
@@ -132,34 +229,77 @@ def build_specs(namespace: Namespace) -> list[EntitySpec]:
 def seed(client: DataHubClient, namespace: Namespace, verify: bool = True) -> SeedResult:
     """Materialize the demo catalog, then reread and verify it.
 
+    Idempotent. Every entity is upserted with its complete aspect set, so running
+    this against a partially seeded instance completes it rather than duplicating
+    or conflicting. This is the recovery path from an interrupted seed.
+
     The sentinel is written **last**, so a seed interrupted partway through does
     not leave a sentinel implying a complete fixture set.
 
+    Every entity is attempted even after one fails, so the resulting report
+    describes the whole instance rather than stopping at the first problem. The
+    run still fails closed: nothing is verified, no sentinel is written, and
+    :class:`PartialSeedError` carries the evidence.
+
     Raises:
         NamespaceViolation: if any entity or edge falls outside the allocation.
+            Never caught here -- an out-of-namespace target aborts the run.
+        PartialSeedError: if any entity could not be materialized.
         VerificationError: if any allowlisted entity or edge could not be read back.
     """
     specs = build_specs(namespace)
     created: list[str] = []
+    failures: list[SpecFailure] = []
 
     # Non-sentinel first; sentinel is the completion marker.
-    ordered = [s for s in specs if s.urn != SENTINEL_URN] + [
-        s for s in specs if s.urn == SENTINEL_URN
-    ]
+    entity_specs = [s for s in specs if s.urn != SENTINEL_URN]
+    sentinel_specs = [s for s in specs if s.urn == SENTINEL_URN]
 
-    for spec in ordered:
+    for spec in entity_specs:
         require_in_namespace(spec.urn, namespace, operation="seed")
         for upstream in spec.upstreams:
             require_in_namespace(upstream, namespace, operation="seed-lineage")
-        _materialize(client, spec, namespace)
+        try:
+            _materialize(client, spec, namespace)
+        except NamespaceViolation:
+            # Blocking by contract: never downgraded to a recorded failure.
+            raise
+        except Exception as exc:
+            failures.append(
+                SpecFailure(
+                    urn=spec.urn,
+                    entity_type=entity_type_of(spec.urn),
+                    error_type=type(exc).__name__,
+                    error=str(exc),
+                )
+            )
+            continue
         created.append(spec.urn)
 
-    for upstream, downstream, resolved in EDGES:
-        require_in_namespace(upstream, namespace, operation="seed-lineage")
-        require_in_namespace(downstream, namespace, operation="seed-lineage")
-        add_edge = getattr(client, "add_edge", None)
-        if add_edge is not None:
-            add_edge(upstream, downstream, resolved=resolved)
+    landed = set(created)
+    _declared_edges, skipped_edges = _declare_edges(client, namespace, landed)
+
+    if failures:
+        result = SeedResult(
+            created=tuple(created),
+            marker=FIXTURE_MARKER,
+            sentinel_urn=SENTINEL_URN,
+            failed=tuple(failures),
+            not_attempted=tuple(s.urn for s in sentinel_specs),
+            skipped_edges=tuple(skipped_edges),
+            sentinel_written=False,
+        )
+        raise PartialSeedError(
+            f"Seed incomplete: {result.describe()}. "
+            + "; ".join(f.describe() for f in failures),
+            result,
+        )
+
+    # Only now is the fixture set complete enough to mark.
+    for spec in sentinel_specs:
+        require_in_namespace(spec.urn, namespace, operation="seed")
+        _materialize(client, spec, namespace)
+        created.append(spec.urn)
 
     verified_entities: tuple[str, ...] = ()
     verified_edges: tuple[tuple[str, str], ...] = ()
@@ -172,7 +312,34 @@ def seed(client: DataHubClient, namespace: Namespace, verify: bool = True) -> Se
         sentinel_urn=SENTINEL_URN,
         verified_entities=verified_entities,
         verified_edges=verified_edges,
+        sentinel_written=bool(sentinel_specs),
     )
+
+
+def _declare_edges(
+    client: DataHubClient, namespace: Namespace, landed: set[str]
+) -> tuple[list[tuple[str, str]], list[tuple[str, str]]]:
+    """Declare fixture lineage, skipping edges whose endpoints did not land.
+
+    Declaring an edge to an entity that failed to materialize would put lineage
+    in the catalog pointing at nothing, which reads as a graph gap rather than as
+    the seed failure it actually is.
+    """
+    declared: list[tuple[str, str]] = []
+    skipped: list[tuple[str, str]] = []
+    add_edge = getattr(client, "add_edge", None)
+
+    for upstream, downstream, resolved in EDGES:
+        require_in_namespace(upstream, namespace, operation="seed-lineage")
+        require_in_namespace(downstream, namespace, operation="seed-lineage")
+        if not {upstream, downstream} <= landed:
+            skipped.append((upstream, downstream))
+            continue
+        if add_edge is not None:
+            add_edge(upstream, downstream, resolved=resolved)
+        declared.append((upstream, downstream))
+
+    return declared, skipped
 
 
 def verify_seed(
@@ -310,8 +477,10 @@ def _require_sentinel(client: DataHubClient, namespace: Namespace) -> None:
     if sentinel is None:
         raise SeedError(
             f"Reset refused: fixture sentinel {SENTINEL_URN!r} not found. "
-            "Either the demo was never seeded here, or the client is pointed at "
-            "the wrong DataHub instance. Run seed first."
+            "The demo was never seeded here, a seed was interrupted before it could "
+            "mark the fixture set complete, or the client is pointed at the wrong "
+            "DataHub instance. Run `python -m demo.cli seed`: it is idempotent and "
+            "completes a partial instance in place, so no cleanup is needed first."
         )
     if not sentinel.has_tag(FIXTURE_MARKER):
         raise SeedError(
@@ -339,11 +508,17 @@ def _assert_exact_target_set(
     this project owns. Proceeding would soft-delete a subset and report success,
     leaving an operator believing the reset was complete. Stopping and saying
     which entities disagree is strictly more useful than guessing.
+
+    The recovery from a partial set is ``seed``, not a cleanup. Seed is
+    idempotent and completes the instance in place; both refusals below say so,
+    because an operator who has just watched a seed fail will otherwise reach for
+    reset and find only a refusal.
     """
     if not removable:
         raise SeedError(
             "Reset refused: no marked fixture entities found. Refusing rather than "
-            "interpreting an empty target set as a wildcard."
+            "interpreting an empty target set as a wildcard. If a seed failed partway, "
+            "re-run `python -m demo.cli seed`; it is idempotent and needs no cleanup first."
         )
 
     extras = sorted(set(removable) - set(allowlist))
@@ -359,7 +534,9 @@ def _assert_exact_target_set(
         )
         raise SeedError(
             f"Reset refused: partial target set. {len(missing)} of {len(allowlist)} "
-            f"allowlisted entities are not resettable: {detail}"
+            f"allowlisted entities are not resettable: {detail}. This is the expected "
+            "state after an interrupted seed. Re-run `python -m demo.cli seed` to "
+            "complete the instance in place, then reset if you still need to."
         )
 
 
@@ -383,7 +560,16 @@ def _fetch(
 
 
 def _materialize(client: DataHubClient, spec: EntitySpec, namespace: Namespace) -> None:
-    """Create or update one complete catalog entry."""
+    """Create or update one complete catalog entry.
+
+    The proposals are built first and discarded on the offline path. That looks
+    wasteful and is deliberate: building them runs the entity/aspect contract
+    check, so writing to the in-memory fake enforces exactly what writing to GMS
+    enforces. Without it the fake accepts an aspect set the server would reject,
+    which is how ``datasetProperties`` on ``mlModel`` reached a live run.
+    """
+    build_entity_proposals(spec)
+
     upsert = getattr(client, "upsert_spec", None)
     if upsert is not None:  # live catalog-backed client
         upsert(spec)
@@ -393,7 +579,9 @@ def _materialize(client: DataHubClient, spec: EntitySpec, namespace: Namespace) 
     if add_entity is not None:  # in-memory fake
         add_entity(
             spec.urn,
-            entity_type="dataset",
+            # Derived, never assumed. Hardcoding "dataset" here is what let the
+            # fake report a dataset for an mlModel URN.
+            entity_type=entity_type_of(spec.urn),
             name=spec.name,
             tags=spec.tags,
             domain=spec.domain_urn,

@@ -7,6 +7,8 @@ shared instance dirty while CI and the coordinator's promotion check saw a pass.
 
 from __future__ import annotations
 
+import json
+
 import pytest
 
 from adapters.fake_datahub import FakeDataHubClient
@@ -91,6 +93,59 @@ class TestSeedExitCodes:
         _patch_client(monkeypatch, client)
         cli.main(["seed"])
         assert "Verified:" in capsys.readouterr().out
+
+    # The live gate hit the partial path with nothing to show for it: the run
+    # reported a failure and left no artifact, so a half-populated shared
+    # instance could not be told apart from an untouched one by hand.
+
+    @pytest.fixture
+    def rejecting(self) -> FakeDataHubClient:
+        return FakeDataHubClient(namespace=NS, fail_on_create=frozenset({NODES[3].urn}))
+
+    def test_a_partial_seed_exits_seven(self, monkeypatch, rejecting):
+        _patch_client(monkeypatch, rejecting)
+        assert cli.main(["seed"]) == 7
+
+    def test_a_partial_seed_writes_its_evidence(self, monkeypatch, rejecting):
+        _patch_client(monkeypatch, rejecting)
+        cli.main(["seed"])
+
+        evidence = cli.get_settings().ensure_state_dir() / "seed-partial.json"
+        assert evidence.is_file(), "partial-seed evidence was not written"
+
+        payload = json.loads(evidence.read_text(encoding="utf-8"))
+        assert payload["complete"] is False
+        assert payload["simulated"] is True
+        assert payload["sentinel_written"] is False
+        assert payload["failed"][0]["urn"] == NODES[3].urn
+        assert "recorded_at" in payload
+        assert "idempotent" in payload["recovery"]
+
+    def test_the_failure_is_reported_on_stderr(self, monkeypatch, rejecting, capsys):
+        _patch_client(monkeypatch, rejecting)
+        cli.main(["seed"])
+
+        err = capsys.readouterr().err
+        assert "Seed incomplete" in err
+        assert NODES[3].urn in err
+        assert "Recovery: re-run" in err
+        assert "Do not run reset first" in err
+
+    def test_reseeding_after_a_partial_run_exits_zero(self, monkeypatch, rejecting):
+        _patch_client(monkeypatch, rejecting)
+        assert cli.main(["seed"]) == 7
+
+        rejecting.fail_on_create = frozenset()
+        assert cli.main(["seed"]) == 0
+
+    def test_the_sentinel_is_absent_until_the_seed_completes(self, monkeypatch, rejecting):
+        _patch_client(monkeypatch, rejecting)
+        cli.main(["seed"])
+        assert SENTINEL_URN not in rejecting.entities
+
+        rejecting.fail_on_create = frozenset()
+        cli.main(["seed"])
+        assert SENTINEL_URN in rejecting.entities
 
 
 class TestResetExitCodes:

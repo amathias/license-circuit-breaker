@@ -481,6 +481,120 @@ published exactly as surely as one pasted into `app/`.
 
 ---
 
+## ADR-024: One entity type, enforced against a pinned aspect registry
+
+**Date:** 2026-07-26 · **Status:** accepted · **Supersedes the entity-model note in ADR-015**
+
+The first live seed failed with **HTTP 422 "Unknown aspect datasetProperties for
+entity mlModel."** The code contradicted itself: `adapters/catalog.py` and the
+coordinator handoff both documented a uniform `dataset`-URN model carrying an
+`artifact_class` custom property, while `demo/graph.py` minted native `mlModel`
+and `mlFeatureTable` URNs for three nodes. The seed then attached
+`DatasetPropertiesClass` to all of them.
+
+**Why nothing caught it.** Three layers each had a reason not to:
+
+- The SDK derives `entityType` from the URN and accepts any aspect object beside
+  it. `MetadataChangeProposalWrapper(entityUrn=<mlModel urn>, aspect=DatasetProperties)`
+  builds without complaint; only GMS rejects it.
+- The offline seed path never built a proposal at all. It called
+  `add_entity(..., entity_type="dataset")` on the in-memory fake — hardcoded — so
+  the fake recorded a dataset for an `mlModel` URN and every offline assertion
+  passed.
+- `DemoNode.entity_type` was a hand-declared field that nothing read. It said
+  `mlModel`; the emitted aspects said dataset; neither was checked against the
+  other.
+
+**Decision: keep the uniform dataset model, and make it executable.**
+
+Native ML entities are the better semantic fit, and the pinned registry shows
+precisely why they are not viable here. DataHub 1.6.0 registers on `mlModel` and
+`mlFeatureTable` neither `datasetProperties` — which carries `artifact_class`,
+`purposes`, `exposure`, and `criticality`, the entire input to the policy engine —
+nor `upstreamLineage`, which is the edge set the impact analysis walks. Native
+support means `mlModelProperties`/`mlFeatureTableProperties`, a different lineage
+mechanism, and a live run to verify all of it. That was not available this
+session, and shipping a half-migrated model would have been worse than either
+end state.
+
+So the three ML URNs became dataset URNs. The platform segment keeps the
+semantics visible — `mlflow`, `feast`, `vectorstore`, `rest-api`, `file` — and
+`artifact_class` still carries what the policy engine consumes. Nothing about the
+demo's ML story is lost: the training path, the feature table, and the model are
+all still distinct, still classified, and still shown under their real platforms.
+
+Three enforcement points replace the prose:
+
+1. `DemoNode.__post_init__` derives the entity type from the URN and raises at
+   import time on anything that is not `dataset`. The stale field is gone; a
+   fact that can be derived is not stored.
+2. `adapters/entity_registry.py` checks every proposal against a pinned snapshot
+   of DataHub's server-side registry, taken from `entity-registry.yml` at tag
+   `v1.6.0` to match the `acryl-datahub==1.6.0.15` pin. The snapshot is stored in
+   the shape `EntityAspectSpecs.to_dict()` produces, so the SDK's own type parses
+   it and a live server's registry can be diffed against it directly. The gate
+   sits in `build_entity_proposals` *and* in `LiveCatalog.emit`, the last point
+   before the network.
+3. Both seed paths now build the same real SDK proposals. The offline path
+   discards them, which looks wasteful and is the entire point: writing to the
+   fake now enforces exactly what writing to GMS enforces, and the entity type it
+   records is derived from the URN rather than hardcoded.
+
+`tests/test_entity_aspect_contract.py` asserts the failing pairs as facts
+(`mlModel` + `datasetProperties`, `mlFeatureTable` + `upstreamLineage`), builds
+every proposal the seed emits, round-trips each through the emitter's own
+`to_obj`/`from_obj`, and checks every `(entityType, aspectName)` against the
+snapshot. A fake cannot satisfy that suite, because no fake is involved in it.
+
+**Cost, stated plainly:** the catalog shows a model as a dataset on the `mlflow`
+platform rather than as a native `mlModel`. That is a real fidelity loss and the
+right trade only until native aspect sets can be implemented *and verified live*.
+Reversing this decision means implementing those aspect sets end to end — not
+just changing the URNs back.
+
+---
+
+## ADR-025: Seed is the recovery path, and says so
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+The 422 above stopped a live seed partway through, which exposed a second defect
+that had nothing to do with aspects.
+
+The seed raised on the first failure. It reported that it had failed and nothing
+else — not which entities had landed, not which were never attempted. A
+half-populated shared instance was indistinguishable from an untouched one
+without querying DataHub by hand.
+
+Worse, the only documented cleanup was `reset`, and `reset` **refuses a partial
+target set by design** (ADR-016): a partial set means the instance and the
+allowlist disagree, so soft-deleting a subset and reporting success would be a
+lie. Correct, and it left the operator with a refusal from the cleanup path and
+no supported way forward. The only remaining lever was a global cleanup, which is
+exactly what must never be run on an instance shared with four other submissions.
+
+**Decision:** seed is the recovery, and it is idempotent by construction — every
+entity is upserted with its complete aspect set on every run, so re-running it
+completes a partial instance in place. It always was; nothing said so, and the
+error messages pointed the other way.
+
+- Seed attempts **every** entity even after one fails, so the report describes
+  the whole instance rather than stopping at the first problem. It still fails
+  closed: no sentinel is written, nothing is verified, and `PartialSeedError`
+  carries a `SeedResult` naming what landed, what failed with which error, what
+  was never attempted, and which lineage edges were skipped.
+- Edges to an entity that failed are not declared. Lineage pointing at nothing
+  reads as a graph gap rather than as the seed failure it actually is.
+- `NamespaceViolation` is still never downgraded to a recorded failure. It
+  aborts, as ADR-016 requires.
+- The CLI writes the report to `APP_STATE_DIR/seed-partial.json` and exits **7**,
+  so a failed live seed leaves an artifact rather than terminal scrollback.
+- Both reset refusals now name `seed` as the recovery and say it is idempotent.
+  The sentinel-missing refusal matters most: after a partial seed the sentinel is
+  deliberately absent, so that is the message an operator actually hits.
+
+---
+
 ## Versions
 
 **No live DataHub evidence has been captured.** This session was barred from AWS
