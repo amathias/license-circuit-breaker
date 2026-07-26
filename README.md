@@ -118,9 +118,16 @@ in-memory substitute with the same client surface and the same namespace guard. 
 produced in that mode is stamped `simulated: true`, the console shows a banner, and the
 evidence report opens with one.
 
-**No live DataHub evidence has been captured in this repository.** Live integration is
-implemented and tested offline; it has not been run against a live instance here, and
-nothing in this repository should be read as claiming otherwise.
+**No live DataHub evidence is committed to this repository.** Everything under
+`examples/`, and every receipt produced by the quickstart above, is stamped
+`simulated: true`.
+
+The deployed build has separately been verified against a live DataHub 1.6 instance by
+the deployment coordinator: readiness returned 10/10 with 12 active entities and 9
+lineage edges, and a reversible catalog writeback was confirmed by re-read and then
+rolled back. That run happened on the deployment host and its receipts stay there — it
+is recorded in [COORDINATOR_HANDOFF.md](./COORDINATOR_HANDOFF.md) and is **not**
+reproducible from this checkout, which is why nothing here is labelled as live.
 
 ---
 

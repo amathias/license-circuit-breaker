@@ -35,8 +35,8 @@ live EC2 host from this project chat.
 
 | Field | Current value |
 |---|---|
-| Status | `in progress` |
-| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. Three live-gate defects fixed: the entity/aspect contract on `03cda1d`, the `mcp` 1.28 transport signature on `c0574cd`, and payload parsing on `0674f3a`; plus one fail-closed parser defect found by the coordinator's independent pre-deployment review of `f1050e2`. **Live seed, transport, and tool discovery are all confirmed working**; readiness must be re-run |
+| Status | `live-verified` |
+| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. Four defects fixed across successive gates: the entity/aspect contract on `03cda1d`, the `mcp` 1.28 transport signature on `c0574cd`, payload parsing on `0674f3a`, and one fail-closed parser defect found by the coordinator's independent pre-deployment review of `f1050e2`. **The coordinator's live closeout on `eb81588` passed end to end**: readiness 10/10, reversible writeback verified and restored, reset/restore matched. Integration gates 3 and 4 are closed — see "Live closeout on `eb81588`" below |
 | Verified commit/artifact | See "Deployment candidate" below |
 | Build command | `py -3.13 -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[dev]"` |
 | Console build command | `npm --prefix web install && npm --prefix web run build` — **see the deployment note below** |
@@ -58,10 +58,10 @@ live EC2 host from this project chat.
 | Judge console | `GET /` — served from `web/dist` when built; absent without error when not |
 | Persistent volumes | `APP_STATE_DIR` only (receipts, manifests, demo artifacts). No hardcoded paths. |
 | Long-running workers | None |
-| DataHub read | **Partially verified live.** Transport and tool discovery confirmed working on `0674f3a`. `get_entities`/`get_lineage` returned real data, which is how the payload shapes were captured; the parsers that consume them are fixed but not yet re-run live. |
-| DataHub writeback | **Seed verified live on `c0574cd`** by the coordinator's read-only DB audit: 12/12 allowlisted `dataset` URNs active, no foreign ML URNs. Slice writeback and durable revocation writeback remain unverified live. |
-| Blockers | Live gates require an AWS/SSM session this session was barred from. All three live defects were diagnosed and fixed from artifacts supplied by the coordinator — the DataHub registry, the installed `mcp` signature, then the captured payloads — never from a live run by this session |
-| Evidence produced | 727 tests, 90.69% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (28 ADRs) |
+| DataHub read | **Verified live on `eb81588`** by the coordinator. Public readiness returned 200 with 10/10 checks, 12 active entities and 9 edges, which exercises the payload parsers end to end against real `get_entities`/`get_lineage` responses. Gate 3 closed. |
+| DataHub writeback | **Verified live on `eb81588`** by the coordinator. Seed writes were already confirmed on `c0574cd` (12/12 allowlisted `dataset` URNs active, no foreign ML URNs); the closeout added a guarded reversible slice writeback recorded `started=true`, `verified=true`, `restored=true`, `residual_risk=false`, and a matched reset/restore pair. Gate 4 closed. Durable revocation writeback (`POST /api/writeback`) was not part of the closeout sequence and remains unexercised live. |
+| Blockers | None outstanding. Live gates ran on the coordinator's AWS/SSM session; this chat has never held one. All four defects were diagnosed and fixed from artifacts the coordinator supplied — the DataHub registry, the installed `mcp` signature, then the captured payloads — never from a live run by this session, and the closeout evidence below is likewise the coordinator's, recorded here rather than reproduced here |
+| Evidence produced | 727 tests, 90.69% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (29 ADRs). Live closeout evidence is the coordinator's and is recorded below, not committed |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -82,14 +82,16 @@ is added after the API router so it cannot shadow `/api`.
 
 ### Evidence status — read before promoting
 
-**No live DataHub evidence was captured in this session.** The task explicitly barred
-AWS access and deployment, so every artifact under `examples/` and every receipt
-produced carries `"simulated": true` and was generated against the deterministic
-in-memory fake.
+> **Superseded in part by "Live closeout on `eb81588`" below.** Integration gates 3
+> and 4 are now **closed** on the coordinator's live evidence. Everything else in
+> this section still holds: no live run has ever originated from this chat, and no
+> live artifact is committed to this repository.
 
-Integration gates 3 (real context read) and 4 (verified writeback) remain **open**.
-They require a live run during the coordinator's verification pass. Nothing in this
-handoff should be read as claiming they passed.
+**No live DataHub evidence has been captured by this chat.** Every artifact under
+`examples/` and every receipt in this repository carries `"simulated": true` and
+was generated against the deterministic in-memory fake. The live receipts exist
+only on the deployment host, under `APP_STATE_DIR`, and are deliberately not
+committed.
 
 **One live result has been reported back, by the coordinator rather than produced
 here.** The gate on `c0574cd` confirmed by read-only DB audit that the seed
@@ -113,17 +115,21 @@ do: a payload the normalizers cannot read raises `PayloadError` naming the keys
 actually received, and readiness reports it as "could not read project entities"
 rather than as an inventory of missing ones.
 
-`README.md` still states that no live DataHub evidence has been captured **in
-this repository**, which remains exactly true — every artifact under `examples/`
-and every receipt here is simulated. The coordinator's audit and captured
-payloads are external to the repository; the payloads appear only as test
-fixtures, which the file labels as captured rather than produced.
+`README.md` states that no live DataHub evidence is captured **in this
+repository**, which remains exactly true after the closeout — every artifact
+under `examples/` and every receipt here is simulated. The coordinator's audits,
+captured payloads, and closeout receipts are all external to the repository; the
+payloads appear only as test fixtures, which the file labels as captured rather
+than produced. `README.md` now also points a reader at this handoff for the live
+result, so the scoped claim cannot be misread as "this was never run live".
 
-This remains true of the judge console. It was exercised against a locally running
-instance in `APP_ENV=offline`, which is how the banner it renders comes to say
-"Simulated DataHub". The console has never been pointed at a live instance, and
-`README.md` states this in the same terms so a judge reading the repository cannot
-form the opposite impression.
+The judge console's committed evidence is likewise offline. It was exercised
+against a locally running instance in `APP_ENV=offline`, which is how the banner
+it renders comes to say "Simulated DataHub". The closeout confirmed the console
+is **served** by the live deployment — `GET /` returned 200, so the Node build
+step ran — but the closeout evidence is API-level and does not include a
+stage-by-stage walkthrough of the console against live data. No live console
+screenshot exists.
 
 ### Response to the coordinator review of `c116a26`
 
@@ -365,10 +371,139 @@ meaning with the rule: `{"downstreams": {}}` now raises instead of returning
 — 26 tests driving the real normalizer, of which 11 fail against `f1050e2`, plus
 the one existing test whose meaning the rule changed.
 
-**Live status is unchanged by this fix.** It is still the case that no live run
-has exercised these parsers, and the coordinator recovery steps under the
-`0674f3a` gate above are still the correct sequence — deploy, re-run readiness
-only, do not seed first, do not reset.
+**Live status at the time of this fix.** No live run had yet exercised these
+parsers, and the coordinator recovery steps under the `0674f3a` gate were the
+correct sequence — deploy, re-run readiness only, do not seed first, do not
+reset. That sequence was followed and it passed; see the closeout below.
+
+### Live closeout on `eb81588`
+
+The coordinator ran the live sequence against the shared DataHub instance on the
+exact deployed product commit `eb815889c7743fcc723cc1ad9182b72838476a93`. It
+passed end to end. **Integration gate 3 (real context read) and gate 4 (verified
+writeback) are closed.**
+
+Every figure in this section is the coordinator's, reported back to this chat and
+recorded here. No live operation was run from this chat, and nothing here was
+re-run to produce it. The receipts and hashes referenced live on the deployment
+host and are not committed.
+
+#### Pre-gate safety position
+
+An encrypted snapshot of the shared instance, `snap-06785d2c5a4a7e44f`, completed
+at 100% before any gate operation ran. A read-only row census was taken at the
+same point:
+
+| Scope | Rows | SHA-256 |
+|---|---|---|
+| `license.` allocation | 93 | `32ff39d4969d50901f6f08fda7ce5fc23d06da7f910b48d9718b9538f9471c9f` |
+| Foreign (every other project, plus DataHub's own system rows) | 1329 | `067410d7c6213c5f24a791310d51cbb812320998a00c6fe409144c90c636dc47` |
+
+#### The estate was rebuilt without reseeding the catalog
+
+The local disposable estate was built on the host **without reseeding the twelve
+DataHub fixtures already active** — six tables, twenty-four indexed documents,
+one model, and twenty-four exported rows, all local artifacts. That honors the
+"do not seed first, do not reset" recovery instruction: the catalog side was left
+exactly as `c0574cd` had left it.
+
+#### Primary aspects were intact; the lineage index was not
+
+An exact twelve-URN `restoreIndices` pass succeeded and exposed a split this
+handoff had not anticipated:
+
+- **nine primary `upstreamLineage` v0 aspects existed** — every write the seed
+  claimed to have made was genuinely present in primary storage;
+- **eight indexed lineage edges were absent** — the graph index did not reflect
+  them, so lineage reads could not see edges the catalog actually held.
+
+This is an indexing fault, not a seeding fault, and the two demand opposite
+responses. Reseeding would have rewritten correct primary aspects to work around
+a stale index.
+
+The repair used documented DataHub 1.6 **exact-URN, aspect-scoped
+`restoreIndices` with aspect `upstreamLineage`**. It migrated one row for each of
+the nine downstream URNs and restored all nine declared edges, **without
+reseeding and without rewriting any primary aspect**. Recorded as ADR-029.
+
+#### Readiness, slice, and receipts
+
+| Step | Result |
+|---|---|
+| Public readiness | **200**, `10/10` checks passed, 12 active entities, 9 edges |
+| Guarded live reversible slice | 8 decisions · 5 escalations · 2 destructive recommendations · `all_clear=false` |
+| Slice writeback | `started=true`, `verified=true`, `restored=true` |
+| Receipt ledger | `/var/lib/datahub-hackathon/license-circuit-breaker/receipts.jsonl`, final SHA-256 `20828945ed5c8f0e269b4748dbc08a084c46cd3563eabf57637d8acafd1c16de` |
+| Receipt contents | 2 live, non-simulated, successful records; writeback `residual_risk=false` |
+
+Readiness passing `10/10` with 12 entities and 9 edges is what closes gate 3: it
+is the payload parsers from this candidate reading real `get_entities` and
+`get_lineage` responses and producing usable context. The slice's
+`verified=true` / `restored=true` pair is what closes gate 4 — the write landed,
+was confirmed by re-read, and was rolled back, leaving no state behind.
+
+**Five escalations against the offline demo's one.** This is expected, and was
+predicted under "Two differences to expect on the live run" above: descendants
+beyond the first hop come back `resolved=False`, because `get_lineage` returns a
+degree and never a parent, so they escalate rather than being claimed contained.
+So the live plan escalates for a broader reason than the offline demo's single
+broken-lineage snapshot, and `all_clear=false` is the correct reading of it — the
+same refusal to issue an unearned all-clear, reached from more incomplete
+evidence.
+
+The two destructive recommendations were **recommendations only**. `slice` plans
+and performs the reversible tag writeback; it does not enforce. Nothing was
+frozen, purged, quarantined, or deleted on the shared instance.
+
+#### Reset and restore were a matched pair
+
+| Step | Result |
+|---|---|
+| `reset` | soft-removed **exactly twelve** fixtures |
+| Readiness after reset | **503** — correctly degraded, fail-closed |
+| `restore` | restored **exactly twelve** |
+| Readiness after restore | **200**, `10/10` checks, 9 edges |
+| Judge console `GET /` | **200** |
+
+The 503 is a positive result, not a fault: readiness is supposed to refuse when
+the fixtures are soft-removed, and it did.
+
+#### Final census, and what it does and does not prove
+
+| Scope | Pre | Post | SHA-256 (post) |
+|---|---|---|---|
+| `license.` allocation | 93 | **143** | `1ca5cfab0dde5046fee2b9dd6b33387e47471da1f57cdbef1e286b8b727e97a5` |
+| Foreign | 1329 | **1329** | `bc7a13cfe6454f24b165f984a4f565b45a5a4e36fd0c93bc027a25074932a93c` |
+
+`sibling_new_rows` was **zero** across all four sibling projects — Lifeboat,
+Forget-Me-Graph, Lineage Fuzzer, and Graph Traffic Control.
+
+The growth from 93 to 143 rows falls entirely within this project's own
+`license.` allocation, which is where the closeout's operations are supposed to
+write: the aspect-scoped reindex, the reversible slice writeback, and the
+reset/restore pair all act there and nowhere else. The census is a whole-run
+before/after, so it does not attribute those 50 rows to individual operations and
+no such breakdown is claimed.
+
+> **Do not claim that all foreign bytes were unchanged.** The foreign row *count*
+> held at 1329 and `sibling_new_rows` was zero, so **no sibling project gained a
+> row and this project created nothing outside its allocation** — that is the
+> isolation claim, and it is proven. The foreign *hash* did change, because
+> shared DataHub system execution rows advanced during the run. Those are
+> DataHub's own bookkeeping, they advance whenever anything at all runs against
+> the instance, and they are not sibling data. Sibling isolation and byte-level
+> immutability of every foreign row are different claims; only the first is
+> established here.
+
+#### What remains unexercised live
+
+- Durable revocation writeback (`POST /api/writeback` and the writeback stage of
+  `demo.cli contain`). The closeout used the *reversible* slice writeback, which
+  is the mechanism for proving catalog-write capability without leaving state
+  behind. The durable path is implemented and covered offline only.
+- A stage-by-stage judge-console walkthrough against live data. `GET /` returned
+  200, which proves the console is built and served; nothing beyond that was
+  captured.
 
 ### Milestone B contents
 
@@ -540,10 +675,14 @@ the full suite before proposing a candidate.
 
 ### Deployment candidate
 
+Now **deployed and live-verified**. The historical recovery sections above still
+point here for "the SHA in Deployment candidate"; that SHA is the one in this
+table.
+
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | `eb815889c7743fcc723cc1ad9182b72838476a93` |
+| Deployed product commit | `eb815889c7743fcc723cc1ad9182b72838476a93` — **deployed and live-verified** |
 | Supersedes | `f1050e208d9d777e768195f122fad72f05238a54` (**rejected** by the coordinator's independent pre-deployment review: the lineage parser accepted booleans as counts and an absent total as zero, both fail-open; its envelope parsing was confirmed good and is carried forward unchanged). Which in turn superseded `0674f3a985ea400aa6c45385982b37f8adbd517e`, rejected by the live gate because the payload parsers could not read the real envelopes; that commit's transport fix was confirmed good |
 | Tests | 725 fast + 2 slow archive-install = **727 passing** |
 | Coverage | **90.69%** (floor 85%) |
@@ -554,29 +693,31 @@ the full suite before proposing a candidate.
 | Working tree | clean |
 | Local `main` == `origin/main` | yes |
 
-**Promotion caveat.** This candidate's own change — the payload parsers, and the
-count-strictness fix on top of them — is verified *offline only*, against
-payloads the coordinator captured and this suite replays. **No live run has
-exercised it.** Re-run the live gate using "Coordinator recovery steps" above
-before promoting.
+**Promotion status: promoted and live-verified.** This candidate was deployed and
+the coordinator ran the full live sequence against it. The prior promotion caveat
+— that the payload parsers and the count-strictness fix on top of them were
+verified offline only — is discharged. See "Live closeout on `eb81588`" above for
+the evidence and its limits.
 
-The count-strictness fix cannot change how a well-formed live response parses:
-the captured envelope, its `degree` variants, and an exact `total: 0` empty set
-behave identically. If it changes anything on the live gate, the response was
-malformed and the `PayloadError` message names the field and the value — attach
-that line.
+The count-strictness fix changed nothing on a well-formed live response, exactly
+as predicted: readiness passed `10/10`, which a `PayloadError` would have
+prevented.
 
-What the live gate *has* confirmed, on earlier candidates, and what it has not:
+What the live gates have confirmed, cumulatively:
 
-| Verified live | On | Still open |
-|---|---|---|
-| Seed writes: 12/12 allowlisted `dataset` URNs active, no foreign ML URNs | `c0574cd` | Seed's own reread verification never ran |
-| MCP transport connects; tool discovery passes | `0674f3a` | — |
-| `get_entities` / `get_lineage` return data (the captured payloads) | `0674f3a` | The parsers consuming them — **this candidate** |
+| Verified live | On |
+|---|---|
+| Seed writes: 12/12 allowlisted `dataset` URNs active, no foreign ML URNs | `c0574cd` |
+| MCP transport connects; tool discovery passes | `0674f3a` |
+| `get_entities` / `get_lineage` return data (the captured payloads) | `0674f3a` |
+| The parsers consuming them: readiness 200, `10/10`, 12 entities, 9 edges | `eb81588` |
+| Reversible writeback verified and restored, `residual_risk=false` | `eb81588` |
+| Reset/restore matched at exactly twelve, with a correct 503 in between | `eb81588` |
 
-So integration gate 3 (real context read) is partly evidenced and not closed: the
-reads happen, and whether this project can now *use* them is exactly what the next
-gate decides. Gate 4 (verified writeback) remains open.
+Integration gate 3 (real context read) and gate 4 (verified writeback) are both
+**closed**. What remains unexercised live is listed at the end of the closeout
+section: the durable revocation writeback, and a console walkthrough against live
+data.
 
 Suggested live verification sequence **for a fresh environment**. The shared
 instance is not fresh — its 12 fixtures are already active, so use "Coordinator
@@ -609,7 +750,15 @@ steps" above.
   writeback stage of `demo.cli contain`): each artifact receives the status it
   earned plus the plan hash and an evidence reference, confirmed by re-read. The
   separate *reversible* writeback used by `demo.cli slice` remains the mechanism
-  for proving catalog-write capability without leaving state behind.
+  for proving catalog-write capability without leaving state behind, and it is
+  the one the live closeout exercised. The durable path is covered offline only.
+- **A successful seed does not guarantee readable lineage.** The closeout found
+  nine `upstreamLineage` v0 aspects present in primary storage while eight of the
+  corresponding edges were missing from the graph index. Seed's reread verifies
+  the aspects, not the index, so this state passes seeding and fails readiness.
+  The repair is exact-URN, aspect-scoped `restoreIndices` with aspect
+  `upstreamLineage` — **not** a reseed, which would rewrite correct primary
+  aspects to work around a stale index. See ADR-029.
 - The console is a build artifact, not a checked-in one. See the deployment note
   under "Milestone handoff".
 - Demo concurrency: seed and reset are not mutually exclusive across processes. Two

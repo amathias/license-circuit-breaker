@@ -60,6 +60,12 @@ from AWS access, so every artifact in `examples/` and every receipt in
 The live gate — real read, real writeback, re-read, restore, receipts — remains
 **open** and belongs to the coordinator's verification pass.
 
+> **Since closed.** This section records the position as of Milestone B and is
+> left as written. The coordinator's live closeout on `eb81588` subsequently
+> passed that gate; see "Live closeout on `eb81588`" in `COORDINATOR_HANDOFF.md`.
+> The first paragraph above still holds — no live artifact is committed to this
+> repository.
+
 ## What the offline slice produces
 
 ```text

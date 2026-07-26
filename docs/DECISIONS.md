@@ -779,8 +779,11 @@ but for a different reason than offline. Reconstructing exact multi-hop parentag
 would need one `get_lineage` call per node; that is a change to the request
 pattern and is flagged for the coordinator rather than adopted unilaterally.
 
-**Not verified live.** Every payload here was captured by the coordinator and
-replayed in tests. No live run has exercised this code.
+**Verified live on `eb81588`.** Written against payloads the coordinator captured
+and replayed in tests; subsequently exercised against the live instance, where
+readiness returned 200 with 10/10 checks, 12 active entities and 9 edges. A
+`PayloadError` would have failed that check, so the real envelopes parsed. See
+"Live closeout on `eb81588`" in `COORDINATOR_HANDOFF.md`.
 
 ---
 
@@ -856,7 +859,76 @@ rest pin behavior that was already correct and must stay that way. One existing
 test changed meaning with the rule and also fails against `f1050e2`:
 `{"downstreams": {}}` now raises instead of returning `[]`.
 
-**Not verified live.** As with ADR-027: no live run has exercised this code.
+**Verified live on `eb81588`.** As with ADR-027. The strictness change was
+predicted to be invisible on a well-formed response, and it was: the live
+readiness pass returned 10/10, which it could not have done had these guards
+rejected a real payload.
+
+---
+
+## ADR-029: A missing lineage edge is an index repair, not a reseed
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+The coordinator's live closeout on `eb81588` found the shared instance in a state
+this project had not modelled. An exact twelve-URN `restoreIndices` pass showed
+**nine primary `upstreamLineage` v0 aspects present** — every edge the seed
+claimed to have written was genuinely in primary storage — while **eight of the
+corresponding indexed lineage edges were absent** from the graph index.
+
+**This is two different systems disagreeing, and the seed cannot see it.**
+`demo/seed.py` verifies by rereading the aspects it wrote. That reread passes
+against primary storage, which was correct. Readiness, by contrast, asks
+`get_lineage` through MCP, which is served from the index — so the same instance
+simultaneously passes seed verification and fails `fixture_lineage`. Nothing in
+this project's own code was wrong; a metadata store and its search index had
+drifted.
+
+**The tempting wrong response is a reseed.** `seed` is idempotent and documented
+as the recovery path for a *partial* seed (ADR-025), so reaching for it here is
+natural. It would also have been the wrong instrument: re-emitting
+`UpstreamLineage` proposals rewrites primary aspects that were already correct,
+in order to provoke the indexing side effect. On a shared instance that is a
+write nobody needed, taken to fix a read.
+
+**Decision: repair the index directly, at the narrowest possible scope.**
+
+Documented DataHub 1.6 `restoreIndices`, invoked with **exact URNs** and **scoped
+to the `upstreamLineage` aspect**, migrated one row for each of the nine
+downstream URNs and restored all nine declared edges. No entity was reseeded and
+no primary aspect was rewritten. Readiness then returned 200 with 10/10 checks,
+12 active entities and 9 edges.
+
+Three properties made this acceptable on a shared instance:
+
+- **Exact URNs, not a namespace or a wildcard.** The operation names the nine
+  downstream fixtures and nothing else, so it cannot reach a sibling project.
+  This is the same fail-closed discipline `app/namespace.py` applies to writes
+  (ADR-001), extended to an operational repair.
+- **Aspect-scoped.** Restricting to `upstreamLineage` bounds the work to the
+  aspect that was actually stale.
+- **Read-repair semantics.** It rebuilds a derived index from primary storage
+  rather than re-deriving primary storage from proposals, so the nine aspects
+  that were already correct stayed the authority. The closeout's row census is
+  taken over the whole run and cannot isolate this operation's contribution, so
+  no per-operation row claim is made here.
+
+**Consequence for the handoff's recovery guidance.** "Only if `entity_coverage`
+reports genuinely missing entities is a reseed warranted" was right but
+incomplete: a `fixture_lineage` failure against entities that *are* present is a
+third condition, distinct from both a payload error and a missing entity, and it
+is repaired by reindexing rather than by seeding. Recorded under "Known
+limitations" in `COORDINATOR_HANDOFF.md`.
+
+**Not automated, deliberately.** `restoreIndices` is an instance-level
+administrative operation on coordinator-owned infrastructure. This project does
+not invoke it, wrap it, or acquire the ability to. It is documented here so the
+next operator recognizes the signature — seed verifies, readiness reports missing
+edges — and reaches for the right tool.
+
+**Revisit if:** the seed gains a way to observe index state as well as primary
+state, in which case it could detect and report this drift instead of leaving it
+to readiness; or if DataHub changes `restoreIndices` scoping.
 
 ---
 
