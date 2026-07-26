@@ -36,7 +36,7 @@ live EC2 host from this project chat.
 | Field | Current value |
 |---|---|
 | Status | `in progress` |
-| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. Three live-gate defects fixed: the entity/aspect contract on `03cda1d`, the `mcp` 1.28 transport signature on `c0574cd`, and payload parsing on `0674f3a`. **Live seed, transport, and tool discovery are all confirmed working**; readiness must be re-run |
+| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. Three live-gate defects fixed: the entity/aspect contract on `03cda1d`, the `mcp` 1.28 transport signature on `c0574cd`, and payload parsing on `0674f3a`; plus one fail-closed parser defect found by the coordinator's independent pre-deployment review of `f1050e2`. **Live seed, transport, and tool discovery are all confirmed working**; readiness must be re-run |
 | Verified commit/artifact | See "Deployment candidate" below |
 | Build command | `py -3.13 -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[dev]"` |
 | Console build command | `npm --prefix web install && npm --prefix web run build` — **see the deployment note below** |
@@ -61,7 +61,7 @@ live EC2 host from this project chat.
 | DataHub read | **Partially verified live.** Transport and tool discovery confirmed working on `0674f3a`. `get_entities`/`get_lineage` returned real data, which is how the payload shapes were captured; the parsers that consume them are fixed but not yet re-run live. |
 | DataHub writeback | **Seed verified live on `c0574cd`** by the coordinator's read-only DB audit: 12/12 allowlisted `dataset` URNs active, no foreign ML URNs. Slice writeback and durable revocation writeback remain unverified live. |
 | Blockers | Live gates require an AWS/SSM session this session was barred from. All three live defects were diagnosed and fixed from artifacts supplied by the coordinator — the DataHub registry, the installed `mcp` signature, then the captured payloads — never from a live run by this session |
-| Evidence produced | 701 tests, 90.62% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (27 ADRs) |
+| Evidence produced | 727 tests, 90.69% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (28 ADRs) |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -294,10 +294,14 @@ rather than returning an empty list.
 
 Every payload in `tests/test_mcp_payloads.py` is the exact captured shape, not an
 invention. Two further strictness rules fall out of the same principle: a missing
-`searchResults` is accepted only when the server also reports `total` 0 or absent,
-so a dropped key cannot read as an empty graph; and `total > len(searchResults)`
+`searchResults` is accepted only when the server proves the set is empty, so a
+dropped key cannot read as an empty graph; and `total > len(searchResults)`
 raises, because a truncated descendant set is a smaller blast radius than the
 real one.
+
+> **The first rule was too weak as shipped in `f1050e2`**, which accepted
+> `total` "0 or absent" and admitted booleans as numbers. Tightened in the
+> candidate below — see the pre-deployment review response and ADR-028.
 
 #### Coordinator recovery steps
 
@@ -328,6 +332,43 @@ descendants beyond the first hop are reported `resolved=False`, because
 `escalated`, but for a different reason than the offline demo. Reconstructing
 exact multi-hop parentage needs one `get_lineage` call per node; that changes the
 request pattern and is flagged here rather than adopted unilaterally.
+
+### Response to the coordinator pre-deployment review of `f1050e2`
+
+The independent review found a **blocking fail-closed defect in the payload
+parser candidate itself**, before it reached a live gate. Fixed, with
+regressions. No live run was involved on either side.
+
+| # | Defect | Resolution | ADR |
+|---|---|---|---|
+| 1 | `bool` subclasses `int`, so `isinstance(total, int)` admitted `False`. `False == 0`, and 0 was the value licensing a missing `searchResults` to be read as an empty descendant set — a malformed payload produced an **empty impact set**, which is a clean bill of health | Booleans are rejected before any numeric handling, in both positions | ADR-028 |
+| 2 | The same trap on `degree`: `True == 1`, and 1 is the only degree treated as a *provable* one-hop edge, so a non-number would have produced lineage-path evidence the server never asserted. `False` was the mirror image, a silently unresolved edge | Same guard, and the error names the indexed field and the value | ADR-028 |
+| 3 | A missing `searchResults` was accepted when `total` was "0 **or absent**". Absence is not zero: a response that dropped both keys was indistinguishable from a genuinely childless node, resolved permissively | Accepted only on positive proof — `total` present and exactly integer `0` | ADR-028 |
+| 4 | Floats, negatives, and other malformed counts | A count must be a genuine non-negative integer. `0.0 == 0` is the same fail-open reading as `False`; a negative total would compare below any real result length and pass the truncation check | ADR-028 |
+
+**Audit of nearby count fields, within this payload parser only.** `downstreams`
+also carries `start` and `count` in the captured envelope. Neither is read, so
+neither can carry the trap, and a test pins that by setting both to booleans and
+asserting the parse is unaffected. `status.removed` is the one field that
+genuinely *is* a boolean and already rejects `1`/`0` for the same reason in
+reverse. No other numeric field is consumed by the entity normalizers. Nothing
+outside `adapters/datahub.py`'s parsing helpers was touched.
+
+**Behavior on real payloads is unchanged.** The captured envelope, its `degree`-1
+and deeper variants, and an exact `total: 0` empty set all parse exactly as
+before. What changed is which *malformed* payloads are accepted, and the
+direction of that change is closed rather than open. One existing test changed
+meaning with the rule: `{"downstreams": {}}` now raises instead of returning
+`[]`.
+
+**Regressions.** `tests/test_mcp_payloads.py::TestLineageCountsAreNumbersNotBooleans`
+— 26 tests driving the real normalizer, of which 11 fail against `f1050e2`, plus
+the one existing test whose meaning the rule changed.
+
+**Live status is unchanged by this fix.** It is still the case that no live run
+has exercised these parsers, and the coordinator recovery steps under the
+`0674f3a` gate above are still the correct sequence — deploy, re-run readiness
+only, do not seed first, do not reset.
 
 ### Milestone B contents
 
@@ -503,9 +544,9 @@ the full suite before proposing a candidate.
 |---|---|
 | Branch | `main` |
 | Product candidate | `f1050e208d9d777e768195f122fad72f05238a54` |
-| Supersedes | `0674f3a985ea400aa6c45385982b37f8adbd517e` (**rejected** by the live gate: payload parsers could not read the real envelopes; its transport fix was confirmed good) |
-| Tests | 699 fast + 2 slow archive-install = **701 passing** |
-| Coverage | **90.62%** (floor 85%) |
+| Supersedes | `f1050e208d9d777e768195f122fad72f05238a54` (**rejected** by the coordinator's independent pre-deployment review: the lineage parser accepted booleans as counts and an absent total as zero, both fail-open; its envelope parsing was confirmed good and is carried forward unchanged). Which in turn superseded `0674f3a985ea400aa6c45385982b37f8adbd517e`, rejected by the live gate because the payload parsers could not read the real envelopes; that commit's transport fix was confirmed good |
+| Tests | 725 fast + 2 slow archive-install = **727 passing** |
+| Coverage | **90.69%** (floor 85%) |
 | Lint | ruff clean |
 | Console typecheck | `tsc --noEmit` clean; `vite build` succeeds |
 | Packaging gate | passing, including the registry snapshot in the installed archive |
@@ -513,10 +554,17 @@ the full suite before proposing a candidate.
 | Working tree | clean |
 | Local `main` == `origin/main` | yes |
 
-**Promotion caveat.** This candidate's own change — the payload parsers — is
-verified *offline only*, against payloads the coordinator captured and this suite
-replays. **No live run has exercised it.** Re-run the live gate using
-"Coordinator recovery steps" above before promoting.
+**Promotion caveat.** This candidate's own change — the payload parsers, and the
+count-strictness fix on top of them — is verified *offline only*, against
+payloads the coordinator captured and this suite replays. **No live run has
+exercised it.** Re-run the live gate using "Coordinator recovery steps" above
+before promoting.
+
+The count-strictness fix cannot change how a well-formed live response parses:
+the captured envelope, its `degree` variants, and an exact `total: 0` empty set
+behave identically. If it changes anything on the live gate, the response was
+malformed and the `PayloadError` message names the field and the value — attach
+that line.
 
 What the live gate *has* confirmed, on earlier candidates, and what it has not:
 

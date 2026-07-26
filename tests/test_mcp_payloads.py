@@ -18,6 +18,11 @@ instance, not an invention:
 
 Nothing here asserts on source text. Each test drives the real normalizer with a
 captured payload and checks the governance-relevant fact that comes out of it.
+
+``TestLineageCountsAreNumbersNotBooleans`` came later, from the coordinator's
+pre-deployment review of the parser fix itself. Its payloads are deliberately
+*not* captured shapes -- they are the malformed ones the parser must refuse, and
+the point is that refusing them is the only safe reading.
 """
 
 from __future__ import annotations
@@ -308,8 +313,16 @@ class TestLineageEnvelope:
     def test_an_empty_set_with_the_key_omitted_is_accepted_when_total_is_zero(self):
         assert _to_lineage_edges(SOURCE, {"downstreams": {"total": 0}}) == []
 
-    def test_an_empty_set_with_no_total_is_accepted(self):
-        assert _to_lineage_edges(SOURCE, {"downstreams": {}}) == []
+    def test_an_empty_set_with_no_total_raises(self):
+        """Absence is not zero.
+
+        A missing ``searchResults`` beside a missing ``total`` is two dropped
+        keys, not a node with no descendants. Accepting it returned an empty
+        impact set from a payload that proved nothing -- the fail-open direction,
+        because an empty impact set is a clean bill of health.
+        """
+        with pytest.raises(PayloadError, match="no proof"):
+            _to_lineage_edges(SOURCE, {"downstreams": {}})
 
     def test_a_dropped_results_key_with_a_nonzero_total_raises(self):
         # Otherwise a dropped key reads as "this node has no descendants".
@@ -362,6 +375,150 @@ class TestLineageEnvelope:
 
         assert edges[0].downstream_urn.startswith("urn:li:dataset:")
         assert "{" not in edges[0].downstream_urn
+
+
+class TestLineageCountsAreNumbersNotBooleans:
+    """The counts in this envelope must be genuine non-negative integers.
+
+    Found by the coordinator's independent pre-deployment review of the payload
+    parser candidate. ``bool`` subclasses ``int`` in Python, so the previous
+    ``isinstance(total, int)`` and ``isinstance(degree, int)`` guards admitted
+    ``True`` and ``False`` as numbers. Both admissions fail *open*:
+
+    - ``total=False`` compared equal to 0, which is the one value that lets a
+      missing ``searchResults`` be read as "this node has no descendants" -- so a
+      malformed payload returned an empty impact set, a clean bill of health;
+    - ``degree=True`` compared equal to 1, which is the one degree this envelope
+      treats as a *provable* lineage edge -- so a malformed payload produced an
+      edge the server never asserted.
+
+    Neither shape has ever been observed from the live server. That is the point:
+    a shape this project cannot explain must raise, not resolve to the most
+    permissive reading of itself.
+    """
+
+    def test_the_language_trap_this_class_exists_for(self):
+        """Documented, not assumed -- the guard is only necessary because of this."""
+        assert isinstance(False, int) and isinstance(True, int)
+        assert False == 0 and True == 1
+
+    # -- total ----------------------------------------------------------
+
+    def test_a_false_total_is_not_an_empty_descendant_set(self):
+        """The exact defect. ``False == 0`` returned ``[]`` -- no impact at all."""
+        with pytest.raises(PayloadError, match="boolean"):
+            _to_lineage_edges(SOURCE, {"downstreams": {"total": False}})
+
+    def test_a_true_total_is_not_the_number_one(self):
+        with pytest.raises(PayloadError, match="boolean"):
+            _to_lineage_edges(SOURCE, {"downstreams": {"total": True}})
+
+    def test_a_boolean_total_raises_even_beside_a_real_result_set(self):
+        """``True`` would have passed the truncation check against one result."""
+        with pytest.raises(PayloadError, match="boolean"):
+            _to_lineage_edges(SOURCE, captured_lineage_payload(total=True))
+
+    def test_a_false_total_raises_even_beside_a_real_result_set(self):
+        with pytest.raises(PayloadError, match="boolean"):
+            _to_lineage_edges(SOURCE, captured_lineage_payload(total=False))
+
+    def test_the_boolean_total_error_names_the_field_and_the_value(self):
+        with pytest.raises(PayloadError, match=r"downstreams\.total.*False"):
+            _to_lineage_edges(SOURCE, {"downstreams": {"total": False}})
+
+    def test_a_float_total_raises(self):
+        # 0.0 == 0, so a float zero is the same fail-open reading as False.
+        with pytest.raises(PayloadError, match=r"downstreams\.total"):
+            _to_lineage_edges(SOURCE, {"downstreams": {"total": 0.0}})
+
+    def test_a_negative_total_raises(self):
+        """There is no descendant set of size -1, and it defeats truncation."""
+        with pytest.raises(PayloadError, match="negative"):
+            _to_lineage_edges(SOURCE, captured_lineage_payload(total=-1))
+
+    def test_a_negative_total_raises_with_no_result_set(self):
+        with pytest.raises(PayloadError, match="negative"):
+            _to_lineage_edges(SOURCE, {"downstreams": {"total": -1}})
+
+    @pytest.mark.parametrize("total", ["0", [], {}, "many"])
+    def test_a_malformed_total_raises(self, total):
+        with pytest.raises(PayloadError, match=r"downstreams\.total"):
+            _to_lineage_edges(SOURCE, {"downstreams": {"total": total}})
+
+    def test_an_exact_integer_zero_is_still_the_one_accepted_empty_set(self):
+        assert _to_lineage_edges(SOURCE, {"downstreams": {"total": 0}}) == []
+
+    # -- degree ---------------------------------------------------------
+
+    def _with_degree(self, degree) -> dict:
+        return {
+            "downstreams": {
+                "total": 1,
+                "searchResults": [{"entity": {"urn": NORMALIZED}, "degree": degree}],
+            }
+        }
+
+    def test_a_true_degree_is_not_a_provable_one_hop_edge(self):
+        """``True == 1`` would have emitted ``resolved=True`` from a non-number."""
+        with pytest.raises(PayloadError, match="boolean"):
+            _to_lineage_edges(SOURCE, self._with_degree(True))
+
+    def test_a_false_degree_raises_rather_than_becoming_an_unresolved_edge(self):
+        with pytest.raises(PayloadError, match="boolean"):
+            _to_lineage_edges(SOURCE, self._with_degree(False))
+
+    def test_the_boolean_degree_error_names_the_indexed_field(self):
+        with pytest.raises(PayloadError, match=r"searchResults\[0\]\.degree.*True"):
+            _to_lineage_edges(SOURCE, self._with_degree(True))
+
+    def test_a_float_degree_raises(self):
+        with pytest.raises(PayloadError, match=r"searchResults\[0\]\.degree"):
+            _to_lineage_edges(SOURCE, self._with_degree(1.0))
+
+    def test_a_negative_degree_raises(self):
+        with pytest.raises(PayloadError, match="negative"):
+            _to_lineage_edges(SOURCE, self._with_degree(-1))
+
+    def test_a_missing_degree_raises(self):
+        with pytest.raises(PayloadError, match=r"searchResults\[0\]\.degree"):
+            _to_lineage_edges(SOURCE, self._with_degree(None))
+
+    @pytest.mark.parametrize("degree", ["1", [], {}])
+    def test_a_malformed_degree_raises(self, degree):
+        with pytest.raises(PayloadError, match=r"searchResults\[0\]\.degree"):
+            _to_lineage_edges(SOURCE, self._with_degree(degree))
+
+    def test_a_real_integer_degree_still_resolves(self):
+        """The guard must not cost the parser the payloads it was written for."""
+        assert _to_lineage_edges(SOURCE, self._with_degree(1))[0].resolved is True
+        assert _to_lineage_edges(SOURCE, self._with_degree(2))[0].resolved is False
+
+    # -- audit of the remaining count-like fields in this parser ---------
+
+    def test_the_paging_fields_are_not_consumed_at_all(self):
+        """``start`` and ``count`` ride along in the captured envelope.
+
+        Neither reaches a decision, so neither can carry the trap. Asserted
+        rather than assumed: if a later change starts reading them, this test is
+        where the same guard has to be applied.
+        """
+        payload = captured_lineage_payload()
+        payload["downstreams"]["start"] = False
+        payload["downstreams"]["count"] = True
+
+        edges = _to_lineage_edges(SOURCE, payload)
+
+        assert [(e.downstream_urn, e.resolved) for e in edges] == [(NORMALIZED, True)]
+
+    def test_the_only_boolean_field_in_the_parser_rejects_integers(self):
+        """The same trap in the other direction, and already closed.
+
+        ``status.removed`` is the one field that genuinely *is* a boolean, and it
+        must not accept ``1``/``0`` any more than a count accepts ``True``.
+        """
+        for value in (1, 0):
+            with pytest.raises(PayloadError, match="boolean"):
+                _is_active({"status": {"removed": value}})
 
 
 class TestParsersAreWiredIntoTheClient:

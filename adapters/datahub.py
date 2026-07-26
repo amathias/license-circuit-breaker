@@ -571,6 +571,44 @@ def _require_mapping(value: Any, what: str) -> dict[str, Any]:
     return value
 
 
+def _require_count(value: Any, what: str) -> int:
+    """Validate a payload count as a genuine non-negative integer.
+
+    ``bool`` subclasses ``int``, so ``isinstance(False, int)`` is ``True`` and a
+    plain ``isinstance`` check lets a boolean through as a number. That is not a
+    theoretical concern here: ``False`` would arrive as the count 0, which is the
+    one value that makes an absent descendant set acceptable, and ``True`` would
+    arrive as 1, which is the one degree this envelope treats as a provable
+    lineage edge. Both are fail-open readings of a field the server never sends
+    as a boolean, so a boolean is a parse failure rather than a number.
+
+    Floats are rejected for the same reason strings are: a count DataHub sends as
+    ``1.0`` is a shape this project has not observed and cannot claim to
+    understand. Negative counts are rejected as malformed -- there is no
+    descendant set of size -1, and quietly accepting one would let it compare
+    below any real result length and pass the truncation check.
+    """
+    if isinstance(value, bool):
+        raise PayloadError(
+            f"{what} must be an integer, got the boolean {value!r}. A boolean is "
+            "not a count, and Python would otherwise read it as one."
+        )
+    if not isinstance(value, int):
+        raise PayloadError(f"{what} must be an integer, got {value!r}")
+    if value < 0:
+        raise PayloadError(f"{what} must not be negative, got {value!r}")
+    return value
+
+
+def _optional_count(value: Any, what: str) -> int | None:
+    """:func:`_require_count`, but an absent field stays absent.
+
+    Absence is not zero. Callers must decide what a missing count means; this
+    helper only refuses to invent one.
+    """
+    return None if value is None else _require_count(value, what)
+
+
 def _iter_entities(payload: Any) -> list[dict[str, Any]]:
     """Unwrap the ``get_entities`` envelope.
 
@@ -745,9 +783,17 @@ def _to_lineage_edges(source_urn: str, payload: Any) -> list[LineageEdge]:
     emitted with ``resolved=False``, which marks reconstructed paths incomplete
     and escalates under LCB-R001 rather than claiming evidence it does not have.
 
+    An empty descendant set is only ever accepted on positive proof: the server
+    must report a ``total`` of exactly integer zero. An absent total is not
+    proof, a boolean is not a number, and neither is a float or a negative --
+    each of those is a dropped or malformed key, and reading one as "no
+    descendants" is the exact fail-open shape this parser exists to refuse.
+
     Raises:
-        PayloadError: on any other shape, or on a truncated result -- a lineage
-            read that silently dropped descendants is a false all-clear.
+        PayloadError: on any other shape, on a count that is not a genuine
+            non-negative integer, on an unproven empty set, or on a truncated
+            result -- a lineage read that silently dropped descendants is a false
+            all-clear.
     """
     envelope = _require_mapping(payload, "the get_lineage payload")
 
@@ -758,17 +804,22 @@ def _to_lineage_edges(source_urn: str, payload: Any) -> list[LineageEdge]:
         )
 
     downstreams = _require_mapping(envelope["downstreams"], "get_lineage 'downstreams'")
-    total = downstreams.get("total")
-    if total is not None and not isinstance(total, int):
-        raise PayloadError(f"downstreams.total must be an integer, got {total!r}")
+    total = _optional_count(downstreams.get("total"), "downstreams.total")
 
     results = downstreams.get("searchResults")
     if results is None:
-        # A node with no descendants. Accepted only when the server agrees there
-        # are none, so a dropped key can never read as an empty graph.
-        if total in (0, None):
+        # A node with no descendants -- accepted only against an exact integer
+        # zero. `total` is already known to be a real non-negative integer or
+        # absent, and absent is not zero, so a dropped key can never read as an
+        # empty graph.
+        if total == 0:
             return []
-        raise PayloadError(f"downstreams reports total={total} but carries no 'searchResults'")
+        raise PayloadError(
+            "downstreams carries no 'searchResults' and no proof that the "
+            f"descendant set is empty: total={downstreams.get('total')!r}. Only an "
+            "exact total of 0 accepts a missing result set; a missing total is a "
+            "dropped key, not an empty graph."
+        )
     if not isinstance(results, list):
         raise PayloadError(
             f"downstreams.searchResults must be a list, got {type(results).__name__}"
@@ -790,11 +841,9 @@ def _to_lineage_edges(source_urn: str, payload: Any) -> list[LineageEdge]:
         if not downstream:
             raise PayloadError(f"downstreams.searchResults[{index}].entity has no urn")
 
-        degree = result.get("degree")
-        if not isinstance(degree, int):
-            raise PayloadError(
-                f"downstreams.searchResults[{index}].degree must be an integer, got {degree!r}"
-            )
+        degree = _require_count(
+            result.get("degree"), f"downstreams.searchResults[{index}].degree"
+        )
 
         edges.append(
             LineageEdge(

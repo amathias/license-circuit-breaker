@@ -749,6 +749,12 @@ Two further strictness rules follow from the same principle:
   blast radius than the real one, which is the exact false all-clear this project
   exists to prevent.
 
+> **The first bullet is superseded by ADR-028.** "0 or absent" was not strict
+> enough in either half. An *absent* total proves nothing, and `isinstance(total,
+> int)` admitted `False`, which compares equal to 0 — so two different malformed
+> payloads still read as an empty graph. Absence is no longer accepted, and a
+> boolean is no longer a number. The second bullet stands unchanged.
+
 **`has_edge` on the live client.** `check_fixture_lineage` verified the 9 declared
 edges by walking once from the source. Given the envelope above, that walk can
 only ever prove edges *leaving the source*, so the check could not pass live no
@@ -775,6 +781,82 @@ pattern and is flagged for the coordinator rather than adopted unilaterally.
 
 **Not verified live.** Every payload here was captured by the coordinator and
 replayed in tests. No live run has exercised this code.
+
+---
+
+## ADR-028: A boolean is not a count, and an absent count is not zero
+
+**Date:** 2026-07-26 · **Status:** accepted · **Amends:** ADR-027
+
+Found by the coordinator's independent pre-deployment review of the payload
+parser candidate `f1050e2`, before it reached the live gate. Two fail-open
+readings survived in `_to_lineage_edges`, and both turn a malformed lineage
+payload into an *empty impact set* — the one output this project must never
+produce without evidence, because an empty impact set is a clean bill of health.
+
+**`bool` is a subclass of `int`.** `isinstance(False, int)` is `True`, so the
+guards `isinstance(total, int)` and `isinstance(degree, int)` admitted booleans
+as numbers. The two values that get through are exactly the two that matter:
+
+- `total=False` compares equal to `0`, and `0` was the value that licensed an
+  absent `searchResults` to be read as "this node has no descendants";
+- `degree=True` compares equal to `1`, and `1` is the only degree this envelope
+  treats as a **provable** one-hop edge — so a non-number would have produced
+  path evidence the server never asserted. `degree=False` is the mirror image: a
+  silently unresolved edge.
+
+**An absent total proves nothing.** ADR-027 accepted a missing `searchResults`
+when `total` was "0 or absent". Absence is not zero. A server that drops both
+keys, or a response truncated in transit, is indistinguishable from a genuinely
+childless node under that rule, and the parser resolved the ambiguity in the
+permissive direction.
+
+**Decision: counts must be proven, and an empty descendant set must be positively
+attested.**
+
+`_require_count` accepts only a genuine non-negative integer: a boolean raises
+before any numeric handling, and so does a float, a string, a container, and a
+negative. `_optional_count` allows the field to be *absent* but never invents a
+value for it. A missing `searchResults` is then accepted on one condition only —
+`total` is present and is exactly integer `0`.
+
+Three notes on the edges of that rule:
+
+- **Floats are rejected, not truncated.** `0.0 == 0` is the same fail-open
+  reading as `False`, and a count DataHub sends as `1.0` is a shape this project
+  has not observed and cannot claim to understand.
+- **Negatives are rejected as malformed.** There is no descendant set of size
+  −1, and a negative total would compare below any real result length and so
+  pass the truncation check that ADR-027 added.
+- **`total < len(searchResults)` is deliberately still accepted.** It is
+  inconsistent, but it errs toward a *larger* blast radius than reported, and the
+  results themselves are the evidence the parser acts on. Only truncation —
+  fewer results than the server counted — is a false all-clear.
+
+**Audit of the remaining count-like fields in this parser.** `downstreams`
+carries `start` and `count` in the captured envelope; neither is read, so neither
+can carry the trap, and a test pins that by setting both to booleans and
+asserting the parse is unaffected. `status.removed` is the one field that
+genuinely *is* a boolean, and it already rejects `1`/`0` for the same reason in
+reverse — `bool("false")` is `True`, which would report a soft-deleted entity as
+live. No other numeric field is consumed by `_iter_entities`,
+`_custom_properties`, `_tag_names`, `_domain_urn`, or `_to_entity_context`.
+
+**Scope.** Parser-local and behavior-preserving for every payload the live server
+has actually been observed to send: the captured envelope, its `degree`-1 and
+deeper variants, and an exact `total: 0` empty set all parse as before. What
+changed is which *malformed* payloads are accepted, and the direction of the
+change is closed rather than open.
+
+**Regressions.** `tests/test_mcp_payloads.py::TestLineageCountsAreNumbersNotBooleans`
+drives the real normalizer with explicit `True`/`False` totals and degrees, plus
+missing, negative, float, and malformed cases, and asserts that real integers
+still resolve. Twenty-six tests, eleven of which fail against `f1050e2` — the
+rest pin behavior that was already correct and must stay that way. One existing
+test changed meaning with the rule and also fails against `f1050e2`:
+`{"downstreams": {}}` now raises instead of returning `[]`.
+
+**Not verified live.** As with ADR-027: no live run has exercised this code.
 
 ---
 
