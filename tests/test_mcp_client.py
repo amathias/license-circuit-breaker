@@ -125,9 +125,12 @@ class _Block:
 class _Result:
     """Stands in for an MCP tool result."""
 
-    def __init__(self, structured=None, blocks=()):
+    def __init__(self, structured=None, blocks=(), isError=False):
         self.structuredContent = structured
-        self.content = list(blocks)
+        # Accept raw strings as well as pre-wrapped blocks, so a test reads as
+        # the payload it is describing.
+        self.content = [b if isinstance(b, _Block) else _Block(b) for b in blocks]
+        self.isError = isError
 
 
 class TestPayloadExtraction:
@@ -179,7 +182,13 @@ class _RecordingTransport:
         schema = self._schemas[name]
         filtered = {k: v for k, v in arguments.items() if schema.accepts(k)}
         self.calls.append((name, filtered))
-        return {"entities": [], "relationships": []}
+        # The empty envelopes a live server actually sends. This used to answer
+        # {"entities": [], "relationships": []}, a shape DataHub never returns,
+        # which is how these tests passed against parsers that could not read a
+        # real response.
+        if name == "get_lineage":
+            return {"downstreams": {"total": 0, "searchResults": []}}
+        return {"result": []}
 
 
 @pytest.fixture
@@ -576,3 +585,74 @@ class TestFailureReporting:
 
         with pytest.raises(McpUnavailable):
             McpTransport("http://mcp.invalid/mcp", "fixture-token").tool_names()
+
+
+class TestErroredToolResults:
+    """An error the server explains in plain text must not render as ``None``.
+
+    ``extract_payload`` returns None when there is no ``structuredContent`` and
+    the text block is not JSON -- an ordinary way to report a failure. The
+    message became ``MCP tool 'get_entities' returned an error: None``, throwing
+    away the only diagnosis the server sent.
+    """
+
+    def test_a_plain_text_error_is_preserved(self):
+        from adapters.mcp_client import extract_error_text
+
+        result = _Result(blocks=("OpenSearch cluster is unavailable",))
+
+        assert extract_error_text(result) == "OpenSearch cluster is unavailable"
+
+    def test_structured_content_still_wins(self):
+        from adapters.mcp_client import extract_error_text
+
+        result = _Result(structured={"code": 503}, blocks=("ignored",))
+
+        assert "503" in extract_error_text(result)
+
+    def test_json_text_is_still_parsed(self):
+        from adapters.mcp_client import extract_error_text
+
+        result = _Result(blocks=('{"code": 503}',))
+
+        assert "503" in extract_error_text(result)
+
+    def test_multiple_text_blocks_are_joined(self):
+        from adapters.mcp_client import extract_error_text
+
+        result = _Result(blocks=("cluster down", "retry later"))
+
+        assert extract_error_text(result) == "cluster down\nretry later"
+
+    def test_a_silent_server_says_so_rather_than_rendering_nothing(self):
+        from adapters.mcp_client import extract_error_text
+
+        assert "no error detail" in extract_error_text(_Result())
+
+    def test_never_renders_the_literal_none(self):
+        from adapters.mcp_client import extract_error_text
+
+        for result in (_Result(), _Result(blocks=("plain text",))):
+            assert extract_error_text(result) != "None"
+
+    def test_the_error_text_is_scrubbed_of_the_token(self, monkeypatch):
+        recorder: dict = {}
+        secret = "fixture-token-abcdef123456"
+
+        class _ErroringSession(_FakeSession):
+            async def call_tool(self, name, arguments):
+                return _Result(blocks=(f"rejected Bearer {secret}",), isError=True)
+
+        _install_fake_transport(monkeypatch, recorder)
+        monkeypatch.setattr("mcp.ClientSession", _ErroringSession)
+
+        transport = McpTransport("http://mcp.invalid/mcp", secret)
+        monkeypatch.setattr(
+            transport, "schema_for", lambda name: ToolSchema(name=name, input_schema={})
+        )
+
+        with pytest.raises(McpError) as excinfo:
+            transport.call("get_entities", {})
+
+        assert secret not in str(excinfo.value)
+        assert "[REDACTED]" in str(excinfo.value)

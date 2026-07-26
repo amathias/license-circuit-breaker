@@ -240,6 +240,21 @@ class LiveDataHubClient:
 
         return _to_lineage_edges(urn, payload)
 
+    def has_edge(self, upstream: str, downstream: str) -> bool:
+        """Whether DataHub reports ``downstream`` as a *direct* descendant.
+
+        Readiness verifies each declared fixture edge, and cannot do that from a
+        single walk out of the source: ``get_lineage`` returns descendants with a
+        ``degree``, never the parent they arrived through, so a walk from the
+        source can only ever prove the edges that leave the source. Asking about
+        one specific upstream is the only question this envelope answers exactly.
+
+        Costs one MCP call per edge. Readiness is a probe, not a hot path, and an
+        edge check that cannot fail is worth less than nothing.
+        """
+        edges = self.get_downstream_lineage(upstream, max_depth=1)
+        return any(e.downstream_urn == downstream and e.resolved for e in edges)
+
     def get_tags(self, urn: str) -> list[str]:
         entity = self.get_entity(urn)
         return list(entity.tags) if entity else []
@@ -538,91 +553,262 @@ def reversible_tag_writeback(
 # -- parsing helpers ----------------------------------------------------
 
 
+class PayloadError(DataHubError):
+    """Raised when an MCP payload does not match the DataHub envelope.
+
+    Deliberately an error rather than an empty result. The previous normalizers
+    returned ``[]`` for any shape they did not recognize, so when the envelope
+    turned out to be ``{"result": [...]}`` rather than ``{"entities": [...]}``,
+    readiness reported *"12/12 entities unusable"* against an instance holding
+    all 12 entities, correctly seeded. "I cannot read the response" and "the data
+    is not there" are opposite diagnoses and must never render the same.
+    """
+
+
+def _require_mapping(value: Any, what: str) -> dict[str, Any]:
+    if not isinstance(value, dict):
+        raise PayloadError(f"expected {what} to be an object, got {type(value).__name__}")
+    return value
+
+
 def _iter_entities(payload: Any) -> list[dict[str, Any]]:
-    """Normalize the several shapes an entity payload arrives in."""
-    if payload is None:
-        return []
-    if isinstance(payload, dict):
-        for key in ("entities", "results", "data"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                return [e for e in value if isinstance(e, dict)]
-        if "urn" in payload:
-            return [payload]
-        return []
-    if isinstance(payload, list):
-        return [e for e in payload if isinstance(e, dict)]
-    return []
+    """Unwrap the ``get_entities`` envelope.
+
+    The exact observed shape is ``{"result": [entity, ...]}``. Nothing else is
+    accepted: guessing at alternatives is what hid the mismatch, and an envelope
+    this project has not seen is one it cannot claim to understand.
+
+    Raises:
+        PayloadError: on any other shape, or a non-object entity.
+    """
+    envelope = _require_mapping(payload, "the get_entities payload")
+
+    if "result" not in envelope:
+        raise PayloadError(
+            "get_entities payload has no 'result' key; "
+            f"got keys {sorted(envelope)}. Expected {{'result': [entity, ...]}}."
+        )
+
+    result = envelope["result"]
+    if not isinstance(result, list):
+        raise PayloadError(f"get_entities 'result' must be a list, got {type(result).__name__}")
+
+    for index, entity in enumerate(result):
+        if not isinstance(entity, dict):
+            raise PayloadError(
+                f"get_entities result[{index}] must be an object, got {type(entity).__name__}"
+            )
+    return result
+
+
+def _custom_properties(raw: Any) -> dict[str, str]:
+    """Normalize ``customProperties`` from its observed list-of-pairs form.
+
+    DataHub returns ``[{"key": ..., "value": ...}, ...]``, not a mapping. The
+    previous code called ``dict()`` on whatever it found, which silently produced
+    ``{}`` here -- and an entity with no custom properties fails the
+    ``artifact_class``/``purposes`` coverage check, so every entity looked
+    unusable.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, list):
+        raise PayloadError(
+            f"customProperties must be a list of {{key, value}}, got {type(raw).__name__}"
+        )
+
+    properties: dict[str, str] = {}
+    for index, pair in enumerate(raw):
+        if not isinstance(pair, dict) or "key" not in pair:
+            raise PayloadError(f"customProperties[{index}] is not a {{key, value}} object")
+        properties[str(pair["key"])] = str(pair.get("value", ""))
+    return properties
+
+
+def _tag_names(raw: Any) -> tuple[str, ...]:
+    """Normalize the nested ``tags`` aspect to bare tag names.
+
+    Observed shape is ``{"tags": [{"tag": {"urn": "urn:li:tag:NAME"}}]}``. The
+    previous code iterated the outer object directly, which yielded the single
+    string ``"tags"`` as a tag name, so every project-tag check failed.
+
+    An absent aspect means an untagged entity, which is a legitimate state and is
+    reported as such rather than as a parse failure.
+    """
+    if raw is None:
+        return ()
+
+    aspect = _require_mapping(raw, "the tags aspect")
+    entries = aspect.get("tags")
+    if entries is None:
+        return ()
+    if not isinstance(entries, list):
+        raise PayloadError(f"tags.tags must be a list, got {type(entries).__name__}")
+
+    names: list[str] = []
+    for index, entry in enumerate(entries):
+        association = _require_mapping(entry, f"tags.tags[{index}]")
+        tag = _require_mapping(association.get("tag"), f"tags.tags[{index}].tag")
+        urn = tag.get("urn")
+        if not urn:
+            raise PayloadError(f"tags.tags[{index}].tag has no urn")
+        names.append(_tag_name(str(urn)))
+    return tuple(names)
+
+
+def _domain_urn(raw: Any) -> str | None:
+    """Normalize the nested ``domain`` aspect to a domain URN.
+
+    Observed shape is ``{"domain": {"urn": "urn:li:domain:...", ...}}``. The
+    previous code looked for ``name``/``urn``/``id`` on the *outer* object and so
+    returned ``None`` for every entity, which readiness reports as "no domain".
+
+    Readiness compares this against :func:`adapters.catalog.domain_urn`, so the
+    URN is what must come back -- not a display name.
+    """
+    if raw is None:
+        return None
+
+    aspect = _require_mapping(raw, "the domain aspect")
+    domain = aspect.get("domain")
+    if domain is None:
+        return None
+
+    urn = _require_mapping(domain, "domain.domain").get("urn")
+    if not urn:
+        raise PayloadError("domain.domain has no urn")
+    return str(urn)
+
+
+def _is_active(raw: dict[str, Any]) -> bool:
+    """Whether the entity is not soft-deleted.
+
+    The observed envelope carries no ``status`` for entities known to be active,
+    so an absent status reads as active. When a status *is* present, ``removed``
+    governs, and a non-boolean is a parse failure rather than something to
+    coerce: ``bool("false")`` is ``True``, which would report a soft-deleted
+    entity as live.
+    """
+    status = raw.get("status")
+    if status is None:
+        return True
+
+    removed = _require_mapping(status, "the status aspect").get("removed")
+    if removed is None:
+        return True
+    if not isinstance(removed, bool):
+        raise PayloadError(f"status.removed must be a boolean, got {removed!r}")
+    return not removed
 
 
 def _to_entity_context(urn: str, raw: dict[str, Any]) -> EntityContext:
-    tags = raw.get("tags") or []
-    properties = raw.get("customProperties") or raw.get("custom_properties") or {}
-    status = raw.get("status") or {}
-    removed = status.get("removed") if isinstance(status, dict) else raw.get("removed")
+    """Build an :class:`EntityContext` from one entity of the observed envelope.
+
+    Raises:
+        PayloadError: if any aspect present is not the shape DataHub returns.
+    """
+    entity_urn = raw.get("urn") or urn
+    if not entity_urn:
+        raise PayloadError("entity has no urn")
+
+    properties = raw.get("properties")
+    properties = {} if properties is None else _require_mapping(properties, "the properties aspect")
 
     return EntityContext(
-        urn=raw.get("urn", urn),
-        entity_type=raw.get("entityType", raw.get("type", "unknown")),
-        name=raw.get("name", ""),
-        tags=tuple(_tag_name(t) for t in tags),
-        domain=_domain_name(raw.get("domain")),
-        owners=tuple(str(o) for o in (raw.get("owners") or ())),
-        description=raw.get("description"),
-        custom_properties={str(k): str(v) for k, v in dict(properties).items()},
-        active=not bool(removed),
+        urn=str(entity_urn),
+        entity_type=str(raw.get("type") or "unknown"),
+        # The top-level name is the entity's; properties.name is the aspect's.
+        # They agree on seeded entities; prefer the top level, always present.
+        name=str(raw.get("name") or properties.get("name") or ""),
+        tags=_tag_names(raw.get("tags")),
+        domain=_domain_urn(raw.get("domain")),
+        owners=(),
+        description=properties.get("description"),
+        custom_properties=_custom_properties(properties.get("customProperties")),
+        active=_is_active(raw),
     )
 
 
 def _to_lineage_edges(source_urn: str, payload: Any) -> list[LineageEdge]:
-    entries: list[dict[str, Any]] = []
-    if isinstance(payload, dict):
-        for key in ("relationships", "entities", "results", "lineage"):
-            value = payload.get(key)
-            if isinstance(value, list):
-                entries = [e for e in value if isinstance(e, dict)]
-                break
-    elif isinstance(payload, list):
-        entries = [e for e in payload if isinstance(e, dict)]
+    """Unwrap the ``get_lineage`` envelope into edges from ``source_urn``.
+
+    The exact observed shape is::
+
+        {"downstreams": {"total": 1,
+                         "searchResults": [{"entity": {"urn": ...}, "degree": 1}]}}
+
+    It is a *descendant* list, not an edge list: ``degree`` says how far away a
+    node is, never through which parent. So only ``degree == 1`` yields a
+    provable edge. A deeper descendant is real -- DataHub found it downstream --
+    but this envelope cannot say by what route, and emitting it as a one-hop edge
+    would let the report cite a lineage path that does not exist. It is therefore
+    emitted with ``resolved=False``, which marks reconstructed paths incomplete
+    and escalates under LCB-R001 rather than claiming evidence it does not have.
+
+    Raises:
+        PayloadError: on any other shape, or on a truncated result -- a lineage
+            read that silently dropped descendants is a false all-clear.
+    """
+    envelope = _require_mapping(payload, "the get_lineage payload")
+
+    if "downstreams" not in envelope:
+        raise PayloadError(
+            "get_lineage payload has no 'downstreams' key; "
+            f"got keys {sorted(envelope)}. Expected {{'downstreams': {{...}}}}."
+        )
+
+    downstreams = _require_mapping(envelope["downstreams"], "get_lineage 'downstreams'")
+    total = downstreams.get("total")
+    if total is not None and not isinstance(total, int):
+        raise PayloadError(f"downstreams.total must be an integer, got {total!r}")
+
+    results = downstreams.get("searchResults")
+    if results is None:
+        # A node with no descendants. Accepted only when the server agrees there
+        # are none, so a dropped key can never read as an empty graph.
+        if total in (0, None):
+            return []
+        raise PayloadError(f"downstreams reports total={total} but carries no 'searchResults'")
+    if not isinstance(results, list):
+        raise PayloadError(
+            f"downstreams.searchResults must be a list, got {type(results).__name__}"
+        )
+    if total is not None and total > len(results):
+        raise PayloadError(
+            f"downstreams truncated: total={total} but only {len(results)} results "
+            "returned. Refusing a partial descendant set, which would read as a "
+            "smaller blast radius than the real one."
+        )
 
     edges: list[LineageEdge] = []
-    for entry in entries:
-        downstream = entry.get("urn") or entry.get("entity") or entry.get("downstream")
+    for index, entry in enumerate(results):
+        result = _require_mapping(entry, f"downstreams.searchResults[{index}]")
+        entity = _require_mapping(
+            result.get("entity"), f"downstreams.searchResults[{index}].entity"
+        )
+        downstream = entity.get("urn")
         if not downstream:
-            continue
+            raise PayloadError(f"downstreams.searchResults[{index}].entity has no urn")
+
+        degree = result.get("degree")
+        if not isinstance(degree, int):
+            raise PayloadError(
+                f"downstreams.searchResults[{index}].degree must be an integer, got {degree!r}"
+            )
+
         edges.append(
             LineageEdge(
-                upstream_urn=entry.get("via") or entry.get("upstream") or source_urn,
+                upstream_urn=source_urn,
                 downstream_urn=str(downstream),
-                # DataHub can report a relationship whose entity it cannot resolve.
-                # Treating that as complete would manufacture a false all-clear.
-                resolved=bool(entry.get("resolved", True)),
+                resolved=degree == 1,
             )
         )
     return edges
 
 
-def _tag_name(raw: Any) -> str:
-    """Normalize a tag to its bare name."""
-    if isinstance(raw, dict):
-        raw = raw.get("tag") or raw.get("name") or ""
-    text = str(raw)
-    return text.rsplit(":", 1)[-1] if text.startswith("urn:li:tag:") else text
-
-
-def _domain_name(raw: Any) -> str | None:
-    """Normalize a domain reference to a comparable name."""
-    if raw is None:
-        return None
-    if isinstance(raw, dict):
-        for key in ("name", "urn", "id"):
-            value = raw.get(key)
-            if value:
-                return str(value)
-        return None
-    if isinstance(raw, list):
-        return _domain_name(raw[0]) if raw else None
-    return str(raw)
+def _tag_name(raw: str) -> str:
+    """Strip a tag URN down to its bare name."""
+    return raw.rsplit(":", 1)[-1] if raw.startswith("urn:li:tag:") else raw
 
 
 def _encode(urn: str) -> str:

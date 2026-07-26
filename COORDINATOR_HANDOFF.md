@@ -36,7 +36,7 @@ live EC2 host from this project chat.
 | Field | Current value |
 |---|---|
 | Status | `in progress` |
-| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. Two live-gate defects fixed: the entity/aspect contract on `03cda1d`, and the `mcp` 1.28 transport signature on `c0574cd`. **Live seed is confirmed working**; MCP read and readiness must be re-run |
+| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. Three live-gate defects fixed: the entity/aspect contract on `03cda1d`, the `mcp` 1.28 transport signature on `c0574cd`, and payload parsing on `0674f3a`. **Live seed, transport, and tool discovery are all confirmed working**; readiness must be re-run |
 | Verified commit/artifact | See "Deployment candidate" below |
 | Build command | `py -3.13 -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[dev]"` |
 | Console build command | `npm --prefix web install && npm --prefix web run build` — **see the deployment note below** |
@@ -58,10 +58,10 @@ live EC2 host from this project chat.
 | Judge console | `GET /` — served from `web/dist` when built; absent without error when not |
 | Persistent volumes | `APP_STATE_DIR` only (receipts, manifests, demo artifacts). No hardcoded paths. |
 | Long-running workers | None |
-| DataHub read | **Not verified live.** The MCP transport was broken against `mcp` 1.28 and is now fixed; no live read has succeeded yet. |
+| DataHub read | **Partially verified live.** Transport and tool discovery confirmed working on `0674f3a`. `get_entities`/`get_lineage` returned real data, which is how the payload shapes were captured; the parsers that consume them are fixed but not yet re-run live. |
 | DataHub writeback | **Seed verified live on `c0574cd`** by the coordinator's read-only DB audit: 12/12 allowlisted `dataset` URNs active, no foreign ML URNs. Slice writeback and durable revocation writeback remain unverified live. |
-| Blockers | Live gates require an AWS/SSM session this session was barred from. Both live defects were diagnosed and fixed from pinned artifacts — the DataHub registry, then the installed `mcp` signature — not from a live run |
-| Evidence produced | 632 tests, 88.94% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (26 ADRs) |
+| Blockers | Live gates require an AWS/SSM session this session was barred from. All three live defects were diagnosed and fixed from artifacts supplied by the coordinator — the DataHub registry, the installed `mcp` signature, then the captured payloads — never from a live run by this session |
+| Evidence produced | 701 tests, 90.62% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (27 ADRs) |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -99,10 +99,25 @@ half of seeding, and it is recorded as the coordinator's, not as this session's.
 It does not close gate 4: the reread verification that seed performs never ran,
 because MCP was broken in the same run. Gate 3 is untouched by it.
 
+**A second live result was reported back from the gate on `0674f3a`:** the MCP
+transport connected and tool discovery passed, and `get_entities` / `get_lineage`
+returned real data — which is how the exact payload shapes in
+`tests/test_mcp_payloads.py` were captured. That confirms the transport half of
+gate 3. It does not close gate 3, because the parsers consuming those payloads
+were broken in that same run and their fix has not been re-run live.
+
+Note that shared OpenSearch was down for part of that run. An infrastructure
+outage and a parser bug are different failures with different owners, and until
+this candidate they rendered identically as "entities missing". They no longer
+do: a payload the normalizers cannot read raises `PayloadError` naming the keys
+actually received, and readiness reports it as "could not read project entities"
+rather than as an inventory of missing ones.
+
 `README.md` still states that no live DataHub evidence has been captured **in
 this repository**, which remains exactly true — every artifact under `examples/`
-and every receipt here is simulated. The coordinator's audit is external to the
-repository and is not represented in it.
+and every receipt here is simulated. The coordinator's audit and captured
+payloads are external to the repository; the payloads appear only as test
+fixtures, which the file labels as captured rather than produced.
 
 This remains true of the judge console. It was exercised against a locally running
 instance in `APP_ENV=offline`, which is how the banner it renders comes to say
@@ -251,6 +266,68 @@ not reseed** unless step 2 says otherwise.
 
 If MCP still fails, the readiness detail now names the leaf cause rather than a
 task-group wrapper — attach that line.
+
+### Response to the live gate on `0674f3a`
+
+The MCP 1.28 transport fix worked and tool discovery passed. The gate then
+surfaced a parser-compatibility defect — and, importantly, separated it from an
+infrastructure fault.
+
+**The OpenSearch distinction.** Shared OpenSearch was down for part of the run,
+which makes `get_entities` genuinely fail. When it recovered and the same call
+returned data that readiness still could not use, the remaining fault was proven
+to be ours. That separation is the diagnosis, and the old code actively obscured
+it: an unreadable response and an empty catalog both rendered as "entities
+missing." They are opposite conditions and now report differently — a payload the
+normalizers do not recognize raises `PayloadError` naming the keys it did get,
+rather than returning an empty list.
+
+| # | Defect | Resolution | ADR |
+|---|---|---|---|
+| 1 | `_iter_entities` looked for `entities`/`results`/`data`; the envelope is `{"result": [...]}`, so it returned `[]` and readiness reported 12/12 unusable against a correctly seeded instance | Strict unwrap of `result`; any other shape raises `PayloadError` | ADR-027 |
+| 2 | `customProperties` is a list of `{key, value}` pairs, not a mapping — `dict()` on it gave `{}`, failing the `artifact_class`/`purposes` check for every entity | Pairs normalized to a mapping; a mapping in that position now raises rather than being accepted | ADR-027 |
+| 3 | `tags` is `{"tags": [{"tag": {"urn": ...}}]}`; the old code iterated the outer object and produced the literal string `"tags"` as the only tag, so every project-tag check failed | Nested association parsed to bare tag names | ADR-027 |
+| 4 | `domain` is `{"domain": {"urn": ...}}`; the old code read `name`/`urn`/`id` off the outer object and returned `None`, reported as "no domain" | Nested domain URN extracted, which is what readiness compares against `domain_urn()` | ADR-027 |
+| 5 | `_to_lineage_edges` did not parse `{"downstreams": {"total": N, "searchResults": [{"entity": {"urn": ...}, "degree": D}]}}` at all, and would have used `str(dict)` as a URN if it had | Exact parse; `degree == 1` is a provable edge, deeper descendants are emitted `resolved=False` rather than as fabricated one-hop paths | ADR-027 |
+| 6 | `check_fixture_lineage` verified 9 declared edges from one walk out of the source, which this envelope can never satisfy — the check could not pass live regardless of the parser | `LiveDataHubClient.has_edge` asks about each specific upstream, one MCP call per edge | ADR-027 |
+| 7 | With `isError=true`, a non-JSON text block and no `structuredContent`, the message rendered as `returned an error: None`, discarding the server's only explanation — which during the outage would have said so | `extract_error_text` falls back to the raw text blocks, still token-scrubbed, and says so explicitly when the server sent nothing | ADR-027 |
+
+Every payload in `tests/test_mcp_payloads.py` is the exact captured shape, not an
+invention. Two further strictness rules fall out of the same principle: a missing
+`searchResults` is accepted only when the server also reports `total` 0 or absent,
+so a dropped key cannot read as an empty graph; and `total > len(searchResults)`
+raises, because a truncated descendant set is a smaller blast radius than the
+real one.
+
+#### Coordinator recovery steps
+
+The fixtures are correct and active on the shared instance. **Do not seed first,
+do not reset.** This is a client-side parser fix and changes nothing in the
+catalog.
+
+1. Deploy the SHA in "Deployment candidate" below.
+2. Re-run readiness only:
+   ```bash
+   curl -s $APP_PUBLIC_URL/api/readiness    # expect "ready", 10/10 checks passed
+   ```
+   `entity_coverage` should now report 12 entities active, tagged, domained, with
+   `['artifact_class', 'purposes']`. `fixture_lineage` verifies the 9 declared
+   edges with one MCP call each.
+3. Only if `entity_coverage` reports genuinely missing entities — as opposed to a
+   `PayloadError` — is a reseed warranted; `seed` remains idempotent.
+4. Then the remaining live sequence under "Deployment candidate".
+
+If a `PayloadError` appears, the envelope has changed again: the message names
+the keys actually received, and that message is what to attach.
+
+**Two differences to expect on the live run, both correct.** The fixture's
+deliberately unresolvable edge (`SOURCE -> ORPHAN`) is materialized live as a
+real `UpstreamLineage` aspect, so DataHub resolves it — unlike offline. And
+descendants beyond the first hop are reported `resolved=False`, because
+`get_lineage` gives a degree, never a parent. The live verdict should still be
+`escalated`, but for a different reason than the offline demo. Reconstructing
+exact multi-hop parentage needs one `get_lineage` call per node; that changes the
+request pattern and is flagged here rather than adopted unilaterally.
 
 ### Milestone B contents
 
@@ -425,10 +502,10 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | `0674f3a985ea400aa6c45385982b37f8adbd517e` |
-| Supersedes | `c0574cd7e8e538c49266b87611a3b6e65cec7442` (**rejected** by the live gate: MCP `TypeError` on readiness; its seed fix was confirmed good) |
-| Tests | 630 fast + 2 slow archive-install = **632 passing** |
-| Coverage | **88.94%** (floor 85%) |
+| Product candidate | the product commit this handoff ships with; its exact SHA is recorded by the `docs:` commit that immediately follows it |
+| Supersedes | `0674f3a985ea400aa6c45385982b37f8adbd517e` (**rejected** by the live gate: payload parsers could not read the real envelopes; its transport fix was confirmed good) |
+| Tests | 699 fast + 2 slow archive-install = **701 passing** |
+| Coverage | **90.62%** (floor 85%) |
 | Lint | ruff clean |
 | Console typecheck | `tsc --noEmit` clean; `vite build` succeeds |
 | Packaging gate | passing, including the registry snapshot in the installed archive |

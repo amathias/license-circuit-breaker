@@ -142,6 +142,31 @@ def extract_payload(result: Any) -> Any:
     return None
 
 
+def extract_error_text(result: Any) -> str:
+    """The best diagnosis available from an errored tool result.
+
+    :func:`extract_payload` returns ``None`` when the server sends a plain-text
+    error with no ``structuredContent`` -- a perfectly ordinary way to report a
+    failure. Interpolating that gave ``MCP tool 'get_entities' returned an error:
+    None``, discarding the only explanation the server sent.
+
+    Falls back to the raw text blocks, and says so explicitly when the server
+    supplied nothing at all rather than rendering an empty string.
+    """
+    payload = extract_payload(result)
+    if payload is not None:
+        return str(payload)
+
+    texts = [
+        str(text)
+        for block in (getattr(result, "content", []) or [])
+        if (text := getattr(block, "text", None))
+    ]
+    if texts:
+        return "\n".join(texts)
+    return "no error detail supplied by the server"
+
+
 class McpTransport:
     """Synchronous facade over an async MCP session.
 
@@ -249,7 +274,7 @@ class McpTransport:
             if getattr(result, "isError", False):
                 # Server-supplied text, scrubbed on the same terms as any other
                 # message that leaves this module.
-                detail = self._redact(extract_payload(result))
+                detail = self._redact(extract_error_text(result))
                 raise McpError(f"MCP tool {name!r} returned an error: {detail}")
             return extract_payload(result)
 

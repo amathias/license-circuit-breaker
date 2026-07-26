@@ -671,6 +671,113 @@ transport's source, not from a live run. The live gate must be re-run.
 
 ---
 
+## ADR-027: Payload normalization is strict, and an unreadable response is an error
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+The third live-gate failure, and the most misleading of the three. The transport
+fix from ADR-026 worked and tool discovery passed. The seed was correct — a
+read-only DB audit confirmed all 12 allowlisted `dataset` URNs active. Readiness
+still reported **12/12 entities unusable**.
+
+**Two failures were tangled together and had to be separated.** Shared OpenSearch
+was down for part of the run, which makes `get_entities` genuinely fail. When it
+recovered and the same call returned data that readiness still could not use, the
+remaining fault was proven to be ours: parser compatibility, not infrastructure.
+That distinction is the whole diagnosis, and the old code actively obscured it,
+because both conditions rendered as "entities missing."
+
+**The envelope.** `get_entities` returns:
+
+```json
+{"result": [{"urn": ..., "type": "dataset", "name": ...,
+             "properties": {"name": ..., "description": ...,
+                            "customProperties": [{"key": ..., "value": ...}]},
+             "tags": {"tags": [{"tag": {"urn": "urn:li:tag:NAME"}}]},
+             "domain": {"domain": {"urn": "urn:li:domain:..."}}}]}
+```
+
+Four separate mismatches, each independently fatal:
+
+- `_iter_entities` looked for `entities`/`results`/`data` and returned `[]` for
+  `result`;
+- `customProperties` is a **list of `{key, value}` pairs**, not a mapping, and
+  `dict()` on it yielded `{}` — so every entity failed the
+  `artifact_class`/`purposes` coverage check;
+- `tags` is `{"tags": [{"tag": {"urn": ...}}]}`; the old code iterated the outer
+  object and produced the single literal string `"tags"` as a tag name, so every
+  project-tag check failed;
+- `domain` is `{"domain": {"urn": ...}}`; the old code looked for `name`/`urn`/`id`
+  on the *outer* object and returned `None`, which readiness reports as "no
+  domain."
+
+**Decision: normalize strictly against the observed envelopes, and raise on
+anything else.**
+
+The root cause is not any single mismatch — it is that the normalizers were
+written to guess. Each tried a list of plausible keys and returned `[]` when none
+matched. That made a parser bug indistinguishable from an empty catalog. `[]` is
+a claim about the world; "I could not read this" is a claim about the message,
+and rendering them identically is how a correctly seeded instance came to look
+empty. `PayloadError` now separates them, and its message names the keys that
+*were* present.
+
+Strict also means no permissive widening. The old accepted key names are gone
+rather than kept alongside the real one: an envelope this project has never
+observed is one it cannot claim to understand.
+
+**Lineage is a descendant list, not an edge list.** `get_lineage` returns:
+
+```json
+{"downstreams": {"total": 1, "searchResults": [{"entity": {"urn": ...}, "degree": 1}]}}
+```
+
+`degree` says how far away a node is, never *through which parent*. So only
+`degree == 1` yields a provable edge. A deeper descendant is real — DataHub found
+it downstream — but this envelope cannot say by what route, and emitting it as a
+one-hop edge would let the containment report cite a lineage path that does not
+exist. Fabricated path evidence is worse than absent path evidence in a tool
+whose central claim is that every action cites a path. Degree > 1 is therefore
+emitted with `resolved=False`, which marks reconstructed paths incomplete and
+escalates under LCB-R001.
+
+Two further strictness rules follow from the same principle:
+
+- a `searchResults` key that is absent is accepted **only** when the server also
+  says `total` is 0 or absent, so a dropped key can never read as an empty graph;
+- `total > len(searchResults)` raises. A truncated descendant set is a smaller
+  blast radius than the real one, which is the exact false all-clear this project
+  exists to prevent.
+
+**`has_edge` on the live client.** `check_fixture_lineage` verified the 9 declared
+edges by walking once from the source. Given the envelope above, that walk can
+only ever prove edges *leaving the source*, so the check could not pass live no
+matter how good the parser was. The live client now answers `has_edge(upstream,
+downstream)` by asking about that specific upstream — one MCP call per edge. That
+is the only question this envelope answers exactly, and a readiness probe is
+worth its round trips.
+
+**Errored results.** With `isError=true`, a non-JSON text block, and no
+`structuredContent`, `extract_payload` returns `None` and the message rendered as
+`MCP tool 'get_entities' returned an error: None` — discarding the server's only
+explanation, which during the outage would have said so. `extract_error_text`
+falls back to the raw text blocks, still scrubbed of the token, and says
+explicitly when the server supplied nothing.
+
+**Consequence to expect on the next live run.** Two things will differ from the
+offline demo, both correctly. The fixture's deliberately unresolvable edge
+(`SOURCE -> ORPHAN`) is materialized live as a real `UpstreamLineage` aspect, so
+DataHub resolves it. And descendants beyond the first hop are reported
+unresolved, per the reasoning above. The live verdict should still be `escalated`,
+but for a different reason than offline. Reconstructing exact multi-hop parentage
+would need one `get_lineage` call per node; that is a change to the request
+pattern and is flagged for the coordinator rather than adopted unilaterally.
+
+**Not verified live.** Every payload here was captured by the coordinator and
+replayed in tests. No live run has exercised this code.
+
+---
+
 ## Versions
 
 **No live DataHub evidence has been captured.** This session was barred from AWS
