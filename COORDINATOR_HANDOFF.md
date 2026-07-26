@@ -36,7 +36,7 @@ live EC2 host from this project chat.
 | Field | Current value |
 |---|---|
 | Status | `in progress` |
-| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. The live gate on `03cda1d` found a release-blocking entity/aspect defect; it is fixed and guarded, and the live gate must be re-run |
+| Milestone | Milestone C — judge console, submission documentation, and release gates complete offline. Two live-gate defects fixed: the entity/aspect contract on `03cda1d`, and the `mcp` 1.28 transport signature on `c0574cd`. **Live seed is confirmed working**; MCP read and readiness must be re-run |
 | Verified commit/artifact | See "Deployment candidate" below |
 | Build command | `py -3.13 -m venv .venv && .venv/Scripts/python.exe -m pip install -e ".[dev]"` |
 | Console build command | `npm --prefix web install && npm --prefix web run build` — **see the deployment note below** |
@@ -58,10 +58,10 @@ live EC2 host from this project chat.
 | Judge console | `GET /` — served from `web/dist` when built; absent without error when not |
 | Persistent volumes | `APP_STATE_DIR` only (receipts, manifests, demo artifacts). No hardcoded paths. |
 | Long-running workers | None |
-| DataHub read | **Not verified live.** Client implemented; exercised only against the in-memory fake. |
-| DataHub writeback | **Not verified live.** Durable and reversible writeback both implemented and tested offline. |
-| Blockers | Live DataHub gate requires an AWS/SSM session this session was barred from. The 422 was diagnosed and fixed from the pinned registry, not from a live run — the fix is verified offline only |
-| Evidence produced | 611 tests, 88.70% coverage, `examples/` (simulated, regenerated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (25 ADRs) |
+| DataHub read | **Not verified live.** The MCP transport was broken against `mcp` 1.28 and is now fixed; no live read has succeeded yet. |
+| DataHub writeback | **Seed verified live on `c0574cd`** by the coordinator's read-only DB audit: 12/12 allowlisted `dataset` URNs active, no foreign ML URNs. Slice writeback and durable revocation writeback remain unverified live. |
+| Blockers | Live gates require an AWS/SSM session this session was barred from. Both live defects were diagnosed and fixed from pinned artifacts — the DataHub registry, then the installed `mcp` signature — not from a live run |
+| Evidence produced | 632 tests, 88.94% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (26 ADRs) |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -90,6 +90,19 @@ in-memory fake.
 Integration gates 3 (real context read) and 4 (verified writeback) remain **open**.
 They require a live run during the coordinator's verification pass. Nothing in this
 handoff should be read as claiming they passed.
+
+**One live result has been reported back, by the coordinator rather than produced
+here.** The gate on `c0574cd` confirmed by read-only DB audit that the seed
+materialized all 12 allowlisted `dataset` URNs active, with no foreign
+`mlModel`/`mlFeatureTable` URNs. That is genuine live evidence for the *write*
+half of seeding, and it is recorded as the coordinator's, not as this session's.
+It does not close gate 4: the reread verification that seed performs never ran,
+because MCP was broken in the same run. Gate 3 is untouched by it.
+
+`README.md` still states that no live DataHub evidence has been captured **in
+this repository**, which remains exactly true — every artifact under `examples/`
+and every receipt here is simulated. The coordinator's audit is external to the
+repository and is not represented in it.
 
 This remains true of the judge console. It was exercised against a locally running
 instance in `APP_ENV=offline`, which is how the banner it renders comes to say
@@ -190,6 +203,54 @@ from this session. If any do exist, they fall outside the new allowlist, which
 means this project's `reset` will not touch them by design — they would need
 coordinator removal. Checking is a read: search the instance for
 `urn:li:mlModel:` and `urn:li:mlFeatureTable:` under the `license.` prefix.
+
+### Response to the live gate on `c0574cd`
+
+The entity/aspect fix held. **The live gate confirmed the seed succeeded**: the
+read-only DB audit found all 12 allowlisted `dataset` URNs active, and no foreign
+`mlModel`/`mlFeatureTable` URNs — closing the open question left in the previous
+handoff. The uniform-dataset model works against a live DataHub 1.6.0.
+
+The gate then failed at MCP verification and readiness:
+
+```
+TypeError: streamable_http_client() got an unexpected keyword argument 'headers'
+  adapters/mcp_client.py:_session
+```
+
+| # | Defect | Resolution | ADR |
+|---|---|---|---|
+| 1 | `mcp` 1.28 changed the transport to `(url, *, http_client=None, terminate_on_close=True)`; `headers=` was removed, and the call site still passed it, so every session raised before issuing a request | The transport is handed an `httpx.AsyncClient` we build, carrying the bearer header, a split request/SSE timeout, and `follow_redirects=True` to match `mcp`'s own client | ADR-026 |
+| 2 | The suite asserted on *source text* (`assert "streamable_http_client" in source`), which is true of a call that cannot execute — a pinned-dependency signature change was invisible to it | Tests bind against `inspect.signature` of the installed `mcp`; the transport spy validates every call against that same real signature; and one test drives the genuine unpatched transport and asserts the failure is a connection failure, not an unexpected-keyword `TypeError` | ADR-026 |
+| 3 | The client is never closed by the transport when it is passed in, and this transport opens one session per call — a connection pool leaked per MCP request | The client is opened in an `async with` that unwinds on success, on handshake failure, and on an exception thrown back into the session | ADR-026 |
+| 4 | A stored `timeout` was passed nowhere, so every request used library defaults | Request budget and SSE read budget are applied as an `httpx.Timeout`, and both defaults are asserted equal to `mcp`'s own | ADR-026 |
+| 5 | A refused connection surfaced as `unhandled errors in a TaskGroup (1 sub-exception)` — true and useless in a readiness report | Exception groups are flattened to leaf causes, so readiness names `ConnectTimeout` / `ConnectionRefusedError` | ADR-026 |
+
+Secret handling is unchanged in intent and stronger in practice: the token still
+only travels to the transport, and anything raised out of a session is now
+scrubbed of both the literal token and any `Bearer <value>` sequence before it
+can reach a receipt or a readiness report.
+
+#### Coordinator recovery steps
+
+The fixtures are already correct on the shared instance. **Do not reset and do
+not reseed** unless step 2 says otherwise.
+
+1. Deploy the SHA in "Deployment candidate" below. This is a client-side
+   transport fix; it changes nothing in the catalog.
+2. Re-run verification and readiness only:
+   ```bash
+   curl -s $APP_PUBLIC_URL/api/readiness    # expect "ready", 10/10 checks passed
+   ```
+   `entity_coverage` and `fixture_lineage` should pass against the fixtures
+   already in place. If either fails, *then* re-run `seed` — it is idempotent and
+   completes in place; still no reset.
+3. Then the remaining live sequence under "Deployment candidate". Note that
+   `slice` performs a reversible writeback and `reset`/`restore` are a matched
+   pair, so the instance ends where it started.
+
+If MCP still fails, the readiness detail now names the leaf cause rather than a
+task-group wrapper — attach that line.
 
 ### Milestone B contents
 
@@ -364,10 +425,10 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | `c0574cd7e8e538c49266b87611a3b6e65cec7442` |
-| Supersedes | `03cda1d970924767aee27ea8c0192edb61efc71f` (**rejected** by the live gate: HTTP 422 on seed) |
-| Tests | 609 fast + 2 slow archive-install = **611 passing** |
-| Coverage | **88.70%** (floor 85%) |
+| Product candidate | the product commit this handoff ships with; its exact SHA is recorded by the `docs:` commit that immediately follows it |
+| Supersedes | `c0574cd7e8e538c49266b87611a3b6e65cec7442` (**rejected** by the live gate: MCP `TypeError` on readiness; its seed fix was confirmed good) |
+| Tests | 630 fast + 2 slow archive-install = **632 passing** |
+| Coverage | **88.94%** (floor 85%) |
 | Lint | ruff clean |
 | Console typecheck | `tsc --noEmit` clean; `vite build` succeeds |
 | Packaging gate | passing, including the registry snapshot in the installed archive |
@@ -385,7 +446,7 @@ Suggested live verification sequence, in a non-judged environment first:
 
 ```bash
 APP_ENV=live python -m demo.cli seed      # expect "Verified: 12 entities, 9 edges"
-curl -s $APP_PUBLIC_URL/api/readiness     # expect status "ready", 9/9 checks passed
+curl -s $APP_PUBLIC_URL/api/readiness     # expect status "ready", 10/10 checks passed
 APP_ENV=live python -m demo.cli slice     # expect exit 0 and verified=True restored=True
 APP_ENV=live python -m demo.cli reset     # expect "12 soft-removed"
 APP_ENV=live python -m demo.cli restore   # expect "Restored 12 entities"

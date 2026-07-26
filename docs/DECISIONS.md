@@ -595,6 +595,82 @@ error messages pointed the other way.
 
 ---
 
+## ADR-026: The MCP transport owns its HTTP client, and tests bind to the real signature
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+The live gate seeded the fixture successfully — all 12 dataset URNs active, no
+foreign ML URNs — and then failed on MCP verification and readiness with
+`TypeError: streamable_http_client() got an unexpected keyword argument
+'headers'`.
+
+`mcp` 1.28 changed the transport signature to:
+
+```python
+streamable_http_client(url, *, http_client: httpx.AsyncClient | None = None,
+                       terminate_on_close: bool = True)
+```
+
+`headers=`, `timeout=`, and `sse_read_timeout=` are gone. Everything HTTP-shaped
+now comes from an `httpx.AsyncClient` the caller supplies. The call site still
+passed `headers=`, so every session raised before issuing a request.
+
+**Why the suite missed it.** `tests/test_mcp_client.py` asserted on *source text* —
+`assert "streamable_http_client" in source`. That is true of a call that cannot
+execute. The suite never touched the transport, so a signature change in a pinned
+dependency was invisible to it. Source-text assertions confirm an import survived
+a refactor; they cannot confirm a call works.
+
+**Decision: pass a client we build and own, and bind the tests to the installed
+signature.**
+
+The client is constructed with `headers` carrying the bearer token, a split
+timeout, and `follow_redirects=True`. Redirect-following is not a preference:
+`mcp` sets it on every client it builds, and a transport that stops following
+redirects fails against a server that issues one.
+
+The split timeout matters and the old code had neither half. It stored a
+`timeout` and passed it nowhere. The request budget (30s) and the SSE read budget
+(300s) are different numbers for a reason: the GET stream idles between messages,
+so applying the request timeout to it would tear down a healthy session against a
+quiet server. Both defaults are asserted equal to `mcp`'s own.
+
+**Lifecycle is the sharp edge.** `streamable_http_client` enters the client's
+context *only when it created the client itself* — read the source: `if not
+client_provided: await stack.enter_async_context(client)`. A client we pass in is
+never closed by the transport. Since this transport opens one session per call,
+an unclosed client would leak a connection pool per MCP request. The client is
+therefore opened in an `async with` that unwinds on success, on handshake
+failure, and on an exception thrown back into the generator at the `yield`.
+
+**Regressions that can actually catch this.** Three layers:
+
+1. `inspect.signature(streamable_http_client).bind(...)` against the installed
+   `mcp` — asserting directly that `headers=` is rejected and `http_client=` is
+   accepted.
+2. A transport spy that binds every call against that same real signature before
+   yielding. A mock that accepted anything would have let the regression through
+   exactly as the old suite did.
+3. One test that drives the **genuine** transport, unpatched, at a dead port and
+   asserts the failure is a connection failure rather than an
+   unexpected-keyword `TypeError`.
+
+Reintroducing `headers=` fails twelve of them, including (3).
+
+**Redaction and failure reporting.** The token is scrubbed from anything raised
+out of a session, by two passes: the literal token value wherever it appears, and
+any `Bearer <value>` sequence, which covers a credential this transport never
+saw. Separately, the transport runs inside an `anyio` task group, so a refused
+connection arrived as `unhandled errors in a TaskGroup (1 sub-exception)` — true,
+and useless in a readiness report. Exception groups are now flattened to their
+leaf causes, so readiness names `ConnectTimeout` or `ConnectionRefusedError`
+instead.
+
+**Not verified live.** The fix was derived from the installed signature and the
+transport's source, not from a live run. The live gate must be re-run.
+
+---
+
 ## Versions
 
 **No live DataHub evidence has been captured.** This session was barred from AWS
