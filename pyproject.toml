@@ -52,6 +52,20 @@ markers = [
     "slow: builds a git archive and installs it into an isolated venv (minutes)",
 ]
 
+[tool.coverage.run]
+source = ["app", "adapters", "demo", "policy"]
+branch = true
+
+[tool.coverage.report]
+show_missing = true
+skip_covered = true
+# The floor, not the target. It sits just under the measured figure so a real
+# regression trips it, and it is deliberately not 100: the live DataHub code
+# paths in `adapters/datahub.py`, `adapters/catalog.py`, and
+# `adapters/mcp_client.py` cannot be exercised without a live instance, and
+# faking them to raise the number would be measuring the fake.
+fail_under = 85
+
 [tool.ruff]
 line-length = 100
 target-version = "py312"
