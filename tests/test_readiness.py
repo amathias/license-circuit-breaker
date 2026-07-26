@@ -29,9 +29,14 @@ NS = Namespace(
 @pytest.fixture
 def settings(tmp_path) -> Settings:
     # Readiness no longer creates the directory -- it only checks it -- so the
-    # fixture must create it the way application startup does.
+    # fixture must create it the way application startup does. The estate is
+    # built for the same reason: readiness requires it, because the judge
+    # workflow cannot execute, verify, or probe anything without it.
+    from demo.estate import EstatePaths, build_estate
+
     state = tmp_path / "state"
     state.mkdir(parents=True, exist_ok=True)
+    build_estate(EstatePaths.under(state))
     return Settings(
         APP_STATE_DIR=str(state),
         DATAHUB_GMS_URL="http://localhost:8080",

@@ -12,17 +12,29 @@ from __future__ import annotations
 
 import time
 from contextlib import asynccontextmanager
-from typing import Any, Literal
+from pathlib import Path
+from typing import Literal
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Response
+from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.clients import build_client, is_offline
+from app.api import get_client
+from app.api import router as api_router
+from app.clients import is_offline
 from app.config import get_settings
 from app.policy import get_policy
 from app.readiness import evaluate_readiness
 
 STARTED_AT = time.monotonic()
+
+#: Returned by readiness when any required check fails. Health stays 200 --
+#: the process is alive and restarting it would not fix an unreachable DataHub.
+SERVICE_UNAVAILABLE = 503
+
+#: Where the built judge console lands. Served only when it has been built, so
+#: the API is usable without a Node toolchain present.
+WEB_DIST = Path(__file__).resolve().parent.parent / "web" / "dist"
 
 
 @asynccontextmanager
@@ -83,20 +95,28 @@ def health() -> HealthResponse:
 
 
 @app.get("/api/readiness", response_model=ReadinessResponse)
-def readiness() -> ReadinessResponse:
+def readiness(response: Response) -> ReadinessResponse:
     """Fail-closed readiness. Read-only; never mutates shared state.
 
     Reports ready only with positive proof of a token, the required MCP tools, the
     project domain and tag, and readable ``license.`` entities. A reachable GMS is
     not sufficient -- an empty or foreign instance would otherwise look healthy
     while producing an impact analysis indistinguishable from an all-clear.
+
+    A degraded report returns **503**, so a reverse proxy or orchestrator can act
+    on it without parsing the body. Health stays 200 throughout: the process is
+    alive and should not be restarted just because DataHub is unreachable. The
+    full check list is still returned with the 503, because "not ready" without
+    a reason is not an answer.
     """
     settings = get_settings()
     report = evaluate_readiness(
         settings,
         load_policy=get_policy,
-        client_factory=lambda: build_client(settings),
+        client_factory=lambda: get_client(settings),
     )
+    if not report.ready:
+        response.status_code = SERVICE_UNAVAILABLE
     return ReadinessResponse(
         status=report.status,
         project_slug=settings.project_slug,
@@ -112,29 +132,14 @@ def readiness() -> ReadinessResponse:
     )
 
 
-@app.get("/api/policy/rules")
-def policy_rules() -> dict[str, Any]:
-    """Expose the deterministic rule table.
+# The governance workflow: rights event, graph, plan, approval, execution,
+# verification, evidence, writeback, and the demo probes.
+app.include_router(api_router)
 
-    Judges and operators can read exactly which rules can fire, and every impact
-    decision cites ids from this list.
-    """
-    table = get_policy()
-    return {
-        "version": table.version,
-        "rules": [
-            {
-                "id": rule.id,
-                "description": rule.description,
-                "precedence": rule.precedence,
-                "when": dict(rule.when),
-                "actions": [a.value for a in rule.actions],
-                "missing_evidence": list(rule.missing_evidence),
-                "requires_approval": rule.requires_approval,
-            }
-            for rule in table.rules
-        ],
-    }
+if WEB_DIST.is_dir():
+    # Mounted last so it cannot shadow /api. Absent when the console has not
+    # been built, which keeps the API runnable without a Node toolchain.
+    app.mount("/", StaticFiles(directory=WEB_DIST, html=True), name="console")
 
 
 def main() -> None:

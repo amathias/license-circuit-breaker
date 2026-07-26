@@ -98,14 +98,36 @@ def check_namespace(settings: Settings) -> Check:
         return Check("namespace_guard", False, str(exc))
 
 
-def check_token(settings: Settings) -> Check:
-    """Token is configured. Never reads, logs, or echoes the value."""
+def check_token(settings: Settings, offline: bool = False) -> Check:
+    """Token is configured. Never reads, logs, or echoes the value.
+
+    In offline mode this is reported but not required: the in-memory substitute
+    takes no credential, and demanding one would leave a correctly configured
+    offline demo permanently degraded. A *live* environment still fails closed --
+    the distinction is ``APP_ENV``, and the readiness payload carries
+    ``simulated`` so an offline "ready" can never be read as a live one.
+    """
+    if offline:
+        return Check(
+            "datahub_token",
+            True,
+            "not required: APP_ENV selects the in-memory substitute",
+            required=False,
+        )
     if not settings.datahub_token:
         return Check("datahub_token", False, "DATAHUB_TOKEN is not configured")
     return Check("datahub_token", True, "configured")
 
 
-def check_endpoints(settings: Settings) -> Check:
+def check_endpoints(settings: Settings, offline: bool = False) -> Check:
+    """Both DataHub URLs are configured. Not required offline, for the same reason."""
+    if offline:
+        return Check(
+            "datahub_endpoints",
+            True,
+            "not required: APP_ENV selects the in-memory substitute",
+            required=False,
+        )
     missing = [
         name
         for name, value in (
@@ -117,6 +139,34 @@ def check_endpoints(settings: Settings) -> Check:
     if missing:
         return Check("datahub_endpoints", False, f"not configured: {', '.join(missing)}")
     return Check("datahub_endpoints", True, "GMS and MCP endpoints configured")
+
+
+def check_estate(settings: Settings) -> Check:
+    """The local data estate is built.
+
+    Required, because the judge workflow cannot execute, verify, or probe
+    anything without it. Reads only; building is an explicit operator action.
+    """
+    from demo.estate import EstatePaths, estate_status
+
+    try:
+        status = estate_status(EstatePaths.under(settings.app_state_dir))
+    except Exception as exc:  # pragma: no cover - defensive
+        return Check("local_estate", False, f"could not read the estate: {exc}")
+
+    if not status["built"]:
+        return Check(
+            "local_estate",
+            False,
+            "not built; run `license-circuit-breaker estate build` before serving",
+        )
+    if not status["warehouse_present"]:
+        return Check("local_estate", False, "the warehouse is missing from the estate")
+    return Check(
+        "local_estate",
+        True,
+        f"built at {status['root']}",
+    )
 
 
 def check_mcp_capabilities(client: DataHubClient) -> Check:
@@ -287,12 +337,16 @@ def evaluate_readiness(
     When the client cannot be constructed, the DataHub-dependent checks are
     reported as failed rather than skipped.
     """
+    from app.clients import is_offline
+
+    offline = is_offline(settings)
     checks: list[Check] = [
         check_local_state(settings),
         check_policy(load_policy),
         check_namespace(settings),
-        check_token(settings),
-        check_endpoints(settings),
+        check_token(settings, offline),
+        check_endpoints(settings, offline),
+        check_estate(settings),
     ]
 
     client: DataHubClient | None = None

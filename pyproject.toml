@@ -66,3 +66,7 @@ ignore = [
 # Tests deliberately construct foreign URNs and fixture credentials to prove
 # the guards reject them; those are not real secrets.
 "tests/*" = ["S105", "S106"]
+# B008 flags calls in argument defaults, which is exactly how FastAPI declares
+# request bodies and dependencies. Rewriting them to satisfy the rule would make
+# the routes less idiomatic without making them safer.
+"app/api.py" = ["B008"]

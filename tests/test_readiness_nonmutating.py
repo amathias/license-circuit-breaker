@@ -27,8 +27,13 @@ NS = Namespace(
 
 @pytest.fixture
 def state_dir(tmp_path):
+    from demo.estate import EstatePaths, build_estate
+
     directory = tmp_path / "state"
     directory.mkdir()
+    # Readiness requires a built estate, so these tests isolate the DataHub
+    # checks they are actually about rather than failing on a missing one.
+    build_estate(EstatePaths.under(directory))
     return directory
 
 
@@ -60,9 +65,12 @@ class TestNoFilesystemMutation:
         assert set(state_dir.iterdir()) == before
 
     def test_repeated_probes_create_no_files(self, settings, seeded, state_dir):
+        # Compared against a snapshot rather than an empty directory: the estate
+        # readiness now requires is legitimately present before the first probe.
+        before = {p.name for p in state_dir.rglob("*")}
         for _ in range(25):
             _evaluate(settings, seeded)
-        assert list(state_dir.iterdir()) == []
+        assert {p.name for p in state_dir.rglob("*")} == before
 
     def test_no_readiness_probe_file_is_written(self, settings, seeded, state_dir):
         _evaluate(settings, seeded)

@@ -422,6 +422,56 @@ def _run_step(
     )
 
 
+def load_report(
+    store: GovernanceStore, plan: ImpactPlan, run_id: str, approval_id: str
+) -> ExecutionReport | None:
+    """Reconstruct a finished run's report from the journal.
+
+    Reading evidence must never have side effects, so this replays what was
+    recorded rather than re-running anything. Returns None when the run is
+    unknown.
+    """
+    journal = ExecutionJournal(store)
+    run_row = journal.run(run_id)
+    if run_row is None:
+        return None
+
+    recorded = journal.completed_steps(run_id)
+    with store.connect() as connection:
+        rows = connection.execute(
+            "SELECT * FROM steps WHERE run_id = ?", (run_id,)
+        ).fetchall()
+    by_seq = {int(row["seq"]): dict(row) for row in rows}
+    by_seq.update(recorded)
+
+    outcomes = [
+        StepOutcome(
+            step=step,
+            status=by_seq[step.seq]["status"],
+            changed=bool(by_seq[step.seq]["changed"]),
+            detail=by_seq[step.seq]["detail"],
+            error=by_seq[step.seq]["error"],
+            evidence=json.loads(by_seq[step.seq]["evidence"] or "{}"),
+            resumed=True,
+        )
+        for step in plan_steps(plan)
+        if step.seq in by_seq
+    ]
+
+    started = datetime.fromisoformat(run_row["started_at"])
+    finished = datetime.fromisoformat(run_row["finished_at"] or run_row["started_at"])
+
+    return ExecutionReport(
+        run_id=run_id,
+        plan_hash=plan.plan_hash(),
+        approval_id=approval_id,
+        started_at=started,
+        finished_at=finished,
+        outcomes=tuple(outcomes),
+        residual=residual_exposure(plan, tuple(outcomes)),
+    )
+
+
 def residual_exposure(
     plan: ImpactPlan, outcomes: tuple[StepOutcome, ...]
 ) -> tuple[ResidualExposure, ...]:
@@ -525,6 +575,7 @@ __all__ = [
     "ResidualExposure",
     "StepOutcome",
     "execute_plan",
+    "load_report",
     "plan_steps",
     "residual_exposure",
 ]

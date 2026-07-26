@@ -103,7 +103,44 @@ class TestReadiness:
         monkeypatch.setattr("httpx.post", _fail)
         monkeypatch.setattr("httpx.put", _fail)
         monkeypatch.setattr("httpx.delete", _fail)
-        assert client.get("/api/readiness").status_code == 200
+        # The status is whatever the checks report; what matters here is that
+        # the probe answered without issuing a single write.
+        assert client.get("/api/readiness").status_code in (200, 503)
+
+    def test_degraded_readiness_returns_503(self, client):
+        # The estate is unbuilt in this fixture, so readiness is degraded. It
+        # must say so in the status line, not only in the body -- a proxy acting
+        # on readiness should not have to parse JSON to notice.
+        response = client.get("/api/readiness")
+        assert response.status_code == 503
+        assert response.json()["status"] == "degraded"
+
+    def test_a_degraded_readiness_still_explains_itself(self, client):
+        body = client.get("/api/readiness").json()
+        failures = [c for c in body["checks"] if not c["passed"]]
+        assert failures, "a degraded readiness must name the checks that failed"
+        assert all(c["detail"] for c in failures)
+
+    def test_health_stays_200_while_readiness_is_degraded(self, client):
+        # The process is alive. Restarting it would not build the estate or
+        # bring DataHub back, so liveness must not follow readiness down.
+        assert client.get("/api/readiness").status_code == 503
+        assert client.get("/api/health").status_code == 200
+
+    def test_readiness_returns_200_once_everything_is_in_place(
+        self, client, tmp_path, monkeypatch
+    ):
+        from demo.estate import EstatePaths, build_estate
+
+        monkeypatch.setenv("APP_ENV", "offline")
+        reset_settings_cache()
+        build_estate(EstatePaths.under(get_settings().ensure_state_dir()))
+
+        response = client.get("/api/readiness")
+        assert response.status_code == 200
+        assert response.json()["status"] == "ready"
+        # An offline "ready" must never be mistakable for a live one.
+        assert response.json()["simulated"] is True
 
 
 class TestPolicyEndpoint:
