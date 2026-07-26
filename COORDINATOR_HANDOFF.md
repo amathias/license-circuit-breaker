@@ -502,7 +502,7 @@ the full suite before proposing a candidate.
 | Field | Value |
 |---|---|
 | Branch | `main` |
-| Product candidate | the product commit this handoff ships with; its exact SHA is recorded by the `docs:` commit that immediately follows it |
+| Product candidate | `f1050e208d9d777e768195f122fad72f05238a54` |
 | Supersedes | `0674f3a985ea400aa6c45385982b37f8adbd517e` (**rejected** by the live gate: payload parsers could not read the real envelopes; its transport fix was confirmed good) |
 | Tests | 699 fast + 2 slow archive-install = **701 passing** |
 | Coverage | **90.62%** (floor 85%) |
