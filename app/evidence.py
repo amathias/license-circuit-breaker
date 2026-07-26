@@ -246,8 +246,31 @@ class EvidenceBundle:
         if self.writeback is None:
             lines.append("_No writeback was attempted._")
         else:
+            # Receipts are rendered as a table rather than through the scalar
+            # branch below. Interpolating the list into an f-string emits a
+            # Python dict repr -- one unreadable line per run, in the section a
+            # reviewer opens the report to read.
+            receipts = self.writeback.get("receipts")
             for key, value in sorted(self.writeback.items()):
+                if key == "receipts":
+                    continue
                 lines.append(f"- **{key}:** `{value}`")
+
+            if isinstance(receipts, list) and receipts:
+                lines += [
+                    "",
+                    "| Artifact | Status | Tag | Aspects | Verified |",
+                    "|---|---|---|---|---|",
+                ]
+                for receipt in receipts:
+                    aspects = receipt.get("aspects") or []
+                    lines.append(
+                        f"| `{_short(str(receipt.get('urn', '')))}` "
+                        f"| {receipt.get('status', '-')} "
+                        f"| `{receipt.get('tag', '-')}` "
+                        f"| {', '.join(str(a) for a in aspects) or '-'} "
+                        f"| {'yes' if receipt.get('verified') else 'NO'} |"
+                    )
 
         lines += [
             "",

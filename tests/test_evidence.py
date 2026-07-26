@@ -272,6 +272,45 @@ class TestSerialization:
         assert "rejected" in markdown
         assert "too broad" in markdown
 
+    def test_writeback_receipts_render_as_a_table_not_a_python_repr(self, plan):
+        # Interpolating the receipt list into the scalar bullet line emitted a
+        # dict repr: one unreadable line in the section a reviewer opens the
+        # report to read.
+        markdown = build_bundle(
+            plan,
+            writeback={
+                "verified": 1,
+                "attempted": 1,
+                "receipts": [
+                    {
+                        "urn": graph.SOURCE,
+                        "status": "escalated",
+                        "tag": "license-revocation-escalated",
+                        "aspects": ["globalTags", "datasetProperties"],
+                        "verified": True,
+                    }
+                ],
+            },
+        ).to_markdown()
+
+        assert "'urn':" not in markdown, "the receipt list was rendered as a Python repr"
+        assert "| Artifact | Status | Tag | Aspects | Verified |" in markdown
+        assert "| `license.reviews.partner_feed` | escalated" in markdown
+        assert "globalTags, datasetProperties" in markdown
+        assert "- **verified:** `1`" in markdown
+        assert "- **attempted:** `1`" in markdown
+
+    def test_an_unverified_writeback_receipt_is_not_reported_as_verified(self, plan):
+        markdown = build_bundle(
+            plan,
+            writeback={
+                "verified": 0,
+                "attempted": 1,
+                "receipts": [{"urn": graph.SOURCE, "status": "contained", "verified": False}],
+            },
+        ).to_markdown()
+        assert "| NO |" in markdown
+
     def test_write_produces_both_formats(self, plan, paths, tmp_path):
         approval, execution, verification = _full_run(plan, paths, GovernanceStore(tmp_path))
         json_path, markdown_path = build_bundle(

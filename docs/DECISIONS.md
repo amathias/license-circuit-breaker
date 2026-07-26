@@ -440,6 +440,22 @@ testing the framework's behavior, it is testing this month's implementation of i
 
 ---
 
+## ADR-022: The writeback section of the report is a table
+
+**Date:** 2026-07-26 · **Status:** accepted
+
+`EvidenceBundle.to_markdown` rendered the writeback dictionary by interpolating
+each value into a bullet. For scalars that reads fine. For the `receipts` list it
+emitted a Python dict repr: one unreadable line, several thousand characters long,
+in the section a reviewer opens the report to read — and it carried the absolute
+evidence path once per receipt.
+
+Receipts now render as a table of artifact, status, tag, aspects, and verified.
+Regressions assert that `'urn':` never appears in the output and that an
+unverified receipt reports `NO` rather than being quietly formatted as success.
+
+---
+
 ## Versions
 
 **No live DataHub evidence has been captured.** This session was barred from AWS
