@@ -13,14 +13,37 @@ own receipts; and writes the outcome back to DataHub.
 > It supports compliance operations. It does not provide legal advice, does not interpret
 > contract text, and makes no determination about whether any obligation has been met.
 
+[Open the live judge console](https://license.datahub-hackathon.aaronmathias.com) ·
+[View the source](https://github.com/amathias/license-circuit-breaker) ·
+[Follow the under-three-minute recording runbook](docs/DEMO_RECORDING.md)
+
+Demo video: **pending recording and public upload**. The repository does not claim that a video
+exists yet.
+
 Catalogs and governance tools can display provenance or warn that a license is
 incompatible. The operational gap begins after the warning: somebody still has to find and
 disable every downstream use. This closes that gap and proves it closed.
 
-**Deployed at <https://license.datahub-hackathon.aaronmathias.com>** — the judge console at
-`/`, and `GET /api/health` and `GET /api/readiness` for its state. No credentials are
-needed. The quickstart below reproduces the whole demo locally with no catalog and no
-network, which is the path to prefer if you want to see it work rather than see it running.
+## Architecture
+
+```mermaid
+flowchart LR
+    R["Structured rights event"] --> P["Deterministic containment planner"]
+    D["DataHub lineage + metadata"] --> P
+    P --> A["Exact-plan human approval"]
+    A --> E["Scoped enforcement adapters"]
+    E --> V["Artifact probes and verification"]
+    V --> W["Receipt-backed DataHub writeback"]
+```
+
+## Three-step judge path
+
+1. Open the live console and inspect the structured rights event plus DataHub-derived impact graph.
+2. Build the containment plan, try the server-side refusal, then approve the exact plan hash.
+3. Execute containment and inspect artifact probes, residual exposure, and verified writeback.
+
+No credentials are needed. The quickstart below reproduces the demo locally with no catalog and no
+network.
 
 ---
 
