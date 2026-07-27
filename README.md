@@ -17,6 +17,11 @@ Catalogs and governance tools can display provenance or warn that a license is
 incompatible. The operational gap begins after the warning: somebody still has to find and
 disable every downstream use. This closes that gap and proves it closed.
 
+**Deployed at <https://license.datahub-hackathon.aaronmathias.com>** — the judge console at
+`/`, and `GET /api/health` and `GET /api/readiness` for its state. No credentials are
+needed. The quickstart below reproduces the whole demo locally with no catalog and no
+network, which is the path to prefer if you want to see it work rather than see it running.
+
 ---
 
 ## Quickstart
@@ -176,6 +181,9 @@ cannot seed, slice, or load a single rule is not a working package.
 
 ## Project documents
 
+- [Submission copy](./SUBMISSION.md) — the Devpost submission of record
+- [Demo recording runbook](./docs/DEMO_RECORDING.md) — the recording sequence and its stop
+  conditions
 - [Demo and submission guide](./DEMO_AND_SUBMISSION.md)
 - [Project brief](./PROJECT_BRIEF.md) · [Build plan](./BUILD_PLAN.md)
 - [Architectural decisions](./docs/DECISIONS.md)
@@ -184,5 +192,6 @@ cannot seed, slice, or load a single rule is not a working package.
 
 ## Submission
 
-Category: **Production ML Agents** (secondary: Open / Wildcard). Built new during the
+Category: **Production ML Agents**, intentionally combined with **Agents That Do Real
+Work** — the reasoning is in [SUBMISSION.md](./SUBMISSION.md). Built new during the
 submission period. Licensed Apache 2.0 — see [LICENSE](./LICENSE).

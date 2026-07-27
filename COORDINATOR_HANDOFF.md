@@ -62,6 +62,7 @@ live EC2 host from this project chat.
 | DataHub writeback | **Verified live on `eb81588`** by the coordinator. Seed writes were already confirmed on `c0574cd` (12/12 allowlisted `dataset` URNs active, no foreign ML URNs); the closeout added a guarded reversible slice writeback recorded `started=true`, `verified=true`, `restored=true`, `residual_risk=false`, and a matched reset/restore pair. Gate 4 closed. Durable revocation writeback (`POST /api/writeback`) was not part of the closeout sequence and remains unexercised live. |
 | Blockers | None outstanding. Live gates ran on the coordinator's AWS/SSM session; this chat has never held one. All four defects were diagnosed and fixed from artifacts the coordinator supplied — the DataHub registry, the installed `mcp` signature, then the captured payloads — never from a live run by this session, and the closeout evidence below is likewise the coordinator's, recorded here rather than reproduced here |
 | Evidence produced | 727 tests, 90.69% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (29 ADRs). Live closeout evidence is the coordinator's and is recorded below, not committed |
+| Submission assets | `SUBMISSION.md` and `docs/DEMO_RECORDING.md` complete — see "Submission assets" below. Docs-only; no redeployment required. The demo video is not yet recorded and nothing claims it is |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -504,6 +505,31 @@ no such breakdown is claimed.
 - A stage-by-stage judge-console walkthrough against live data. `GET /` returned
   200, which proves the console is built and served; nothing beyond that was
   captured.
+
+### Submission assets
+
+Complete and docs-only. **Nothing deployment-facing changed and no redeployment is
+required** — the deployed product remains `eb815889c7743fcc723cc1ad9182b72838476a93`.
+No product code, test, dependency, runtime or deployment configuration, generated
+example, or receipt was touched.
+
+| Asset | State |
+|---|---|
+| `SUBMISSION.md` | Devpost submission copy of record. Carries the public app and repository URLs, the eligible-integration statement, category fit, architecture, user journey, setup, challenges, accomplishments, and limitations |
+| `docs/DEMO_RECORDING.md` | Recording runbook of record: pre-record gate, a 2:40 sequence under the three-minute cap, stop conditions, and the post-record publication checklist |
+| `DEMO_AND_SUBMISSION.md` | Retained as narrative background; now points at the two files above as authoritative |
+| `README.md` | Now names the public app URL and links both files |
+| Demo video | **Does not exist yet.** No submission-ready file claims it does |
+
+Two points the coordinator owns rather than this chat:
+
+1. **The live evidence in `SUBMISSION.md` is attributed to the coordinator**, quoted
+   from the closeout above and marked as not committed and not reproducible from a
+   clean checkout. Nothing in it is claimed as this chat's or the repository's.
+2. **The recording runbook forbids every mutating request against the public host** —
+   no execute, approve, writeback, reset, seed, or restore — and confines the public
+   segment to read-only frames. The durable revocation writeback is still unexercised
+   live, and a recording is not the place to change that.
 
 ### Milestone B contents
 

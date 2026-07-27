@@ -1,8 +1,13 @@
 # Demo and Submission Guide: License Circuit Breaker
 
-This is the runbook for recording the demo and filling in the submission. Every number,
-rule ID, and exit code below was taken from an actual offline run — see
-`examples/containment-report.md` for the captured output.
+Background and source material. Every number, rule ID, and exit code below was taken from an
+actual offline run — see `examples/containment-report.md` for the captured output.
+
+> **Two files now supersede parts of this one.** [`SUBMISSION.md`](./SUBMISSION.md) is the
+> submission copy of record, and [`docs/DEMO_RECORDING.md`](./docs/DEMO_RECORDING.md) is the
+> recording runbook of record — it carries the public app URL, the pre-record gate, and the
+> stop conditions. Where a timing or a claim differs, those two win. What stays here and is
+> not duplicated there: the narrative framing below, and the "Claims to avoid" list.
 
 ## Devpost short description
 
