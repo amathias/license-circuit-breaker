@@ -74,8 +74,8 @@ class TestPackageDeclaration:
 
     def test_declares_live_datahub_dependencies(self):
         content = (REPO / "pyproject.toml").read_text(encoding="utf-8")
-        assert "acryl-datahub" in content
-        assert "mcp>=" in content
+        assert '"acryl-datahub==1.6.0.15"' in content
+        assert '"mcp==1.28.1"' in content
 
     def test_ships_the_rule_table_as_package_data(self):
         content = (REPO / "pyproject.toml").read_text(encoding="utf-8")
