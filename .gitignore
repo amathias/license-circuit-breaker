@@ -27,3 +27,6 @@ web/dist/
 # OS
 .DS_Store
 Thumbs.db
+
+# Local AI-tool state; never publish project-specific settings or worktrees
+.claude/
