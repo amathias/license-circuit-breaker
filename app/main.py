@@ -10,6 +10,7 @@ that writes would corrupt other projects' demos every time the proxy polled it.
 
 from __future__ import annotations
 
+import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -48,6 +49,12 @@ async def lifespan(_: FastAPI):
     yield
 
 
+def _interactive_docs_enabled(app_env: str) -> bool:
+    return app_env.casefold() in {"development", "local", "test"}
+
+
+_docs_enabled = _interactive_docs_enabled(os.getenv("APP_ENV", "local"))
+
 app = FastAPI(
     title="License Circuit Breaker",
     description=(
@@ -56,6 +63,9 @@ app = FastAPI(
     ),
     version="0.1.0",
     lifespan=lifespan,
+    docs_url="/docs" if _docs_enabled else None,
+    redoc_url="/redoc" if _docs_enabled else None,
+    openapi_url="/openapi.json" if _docs_enabled else None,
 )
 
 

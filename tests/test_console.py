@@ -20,7 +20,7 @@ import pytest
 from fastapi.testclient import TestClient
 
 from app.config import get_settings, reset_settings_cache
-from app.main import WEB_DIST, app
+from app.main import WEB_DIST, _interactive_docs_enabled, app
 from demo.estate import EstatePaths, build_estate
 
 WEB = Path(__file__).resolve().parent.parent / "web"
@@ -89,7 +89,11 @@ class TestSourceLayout:
 
         for source in (WEB / "src").rglob("*.ts*"):
             text = source.read_text(encoding="utf-8")
-            assert "https://" not in text or "http://127.0.0.1" in text, (
+            non_navigation_text = text.replace(
+                "https://github.com/amathias/license-circuit-breaker#verification",
+                "",
+            )
+            assert "https://" not in non_navigation_text or "http://127.0.0.1" in text, (
                 f"{source.name} references an external origin"
             )
 
@@ -165,12 +169,24 @@ class TestStaticServing:
         assert client.get("/api/health").status_code == 200
         assert client.get("/api/plan").status_code == 200
 
+    def test_interactive_api_docs_are_local_only(self):
+        assert _interactive_docs_enabled("local") is True
+        assert _interactive_docs_enabled("test") is True
+        assert _interactive_docs_enabled("hackathon") is False
+        assert _interactive_docs_enabled("production") is False
+
     def test_the_console_is_served_when_it_has_been_built(self, client):
         if not WEB_DIST.is_dir():
             pytest.skip("web/dist is not built; run `npm --prefix web run build`")
         response = client.get("/")
         assert response.status_code == 200
         assert '<div id="root">' in response.text
+
+    def test_the_console_explains_the_public_demo_boundary(self):
+        source = (WEB / "src" / "App.tsx").read_text(encoding="utf-8")
+        assert "PUBLIC DEMO" in source
+        assert "license.*" in source
+        assert "never production or personal data" in source
 
     def test_the_static_mount_never_shadows_the_api(self, client):
         # The mount is added last for exactly this reason.

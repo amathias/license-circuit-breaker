@@ -174,6 +174,11 @@ reproducible from this checkout, which is why nothing here is labelled as live.
 
 ## Verification
 
+Interactive Swagger, ReDoc, and the generated OpenAPI document are enabled by default for local,
+development, and test use at `/docs`, `/redoc`, and `/openapi.json`. The unauthenticated public
+judge deployment disables those routes. The source, typed UI client, tests, and this README remain
+the public API and self-hosting reference.
+
 ```bash
 .venv/Scripts/python.exe -m ruff check .
 .venv/Scripts/python.exe -m pytest tests/ -m "not slow"    # the working suite

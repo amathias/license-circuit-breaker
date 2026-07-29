@@ -280,6 +280,24 @@ export default function App() {
         </div>
       </header>
 
+      <aside className="demo-banner" role="note" aria-label="Public demo notice">
+        <strong>PUBLIC DEMO</strong>
+        <span>
+          This judge console operates a disposable license-containment estate. The workflow is
+          restricted to the isolated <code>license.*</code> DataHub allocation and project-owned
+          demo artifacts—never production or personal data.
+        </span>
+        <span className="demo-links">
+          <a
+            href="https://github.com/amathias/license-circuit-breaker#verification"
+            target="_blank"
+            rel="noreferrer"
+          >
+            Source, API &amp; self-hosting
+          </a>
+        </span>
+      </aside>
+
       {readiness?.simulated ? (
         <div className="notice warn">
           <strong>Simulated DataHub.</strong> Catalog reads and writeback are running against the
