@@ -1,5 +1,21 @@
 # Coordinator Handoff: License Circuit Breaker
 
+## 2026-07-29 public-demo boundary closeout
+
+| Field | Verified value |
+|---|---|
+| Exact deployed product | `36bf3ca579b1aaf114e0ca4987c26566704228eb` |
+| Public endpoint | `https://license.datahub-hackathon.aaronmathias.com` |
+| Public acceptance | Root and health returned 200; strong readiness returned 200 with all 10 checks passing |
+| Browser acceptance | One prominent `PUBLIC DEMO` notice rendered above the workflow and identified the disposable estate, `license.*` allocation, no-production/no-personal-data boundary, and source/API/self-hosting link; the complete live console loaded after its bounded DataHub checks |
+| Hosted API documentation | `/docs`, `/redoc`, and `/openapi.json` returned 404 in `APP_ENV=hackathon`; local/development/test documentation remains enabled |
+| Verification | Focused console tests (18) passed, Ruff passed, TypeScript checking and the production Vite build passed, and the exact commit passed both GitHub Actions jobs |
+
+The local clean-install packaging checks that require downloading build dependencies were blocked
+by the Windows sandbox network policy, not by a package failure. GitHub Actions independently
+completed the full clean runner verification before promotion. No catalog seed or live DataHub
+mutation was part of this presentation-only deployment.
+
 ## Relationship to the portfolio coordinator
 
 This project chat owns License Circuit Breaker's product, code, tests, demo, evidence, and
