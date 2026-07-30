@@ -12,10 +12,10 @@ actual offline run — see `examples/containment-report.md` for the captured out
 ## Devpost short description
 
 License Circuit Breaker is a DataHub-powered enforcement agent for data and AI supply
-chains. When an upstream usage right is revoked, it traces every affected descendant,
-applies deterministic policy, executes approved containment or replacement actions,
-verifies that prohibited artifacts stopped serving, and writes the evidence back to
-DataHub.
+chains. When an upstream usage right is revoked, it traces every represented descendant,
+applies deterministic policy, executes approved actions where the evidence is sufficient,
+escalates gaps instead of claiming an all-clear, verifies the artifact state, and writes
+the outcome back to DataHub.
 
 ---
 
@@ -186,7 +186,7 @@ compliance dashboard. Three specifics worth naming:
 - "Cryptographically proves universal model unlearning."
 - "The repository examples or video are live DataHub receipts." They are labeled simulations.
   The public deployment was verified separately against live DataHub, including a reversible
-  write/reread/restore exercise; the durable per-artifact writeback remains offline-verified only.
+  write/reread/restore exercise and a guarded 8/8 durable outcome writeback verified by reread.
 
 Prefer: "Executes and verifies policy actions for descendants represented in the
 demonstrated DataHub graph."

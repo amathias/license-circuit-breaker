@@ -162,9 +162,11 @@ and every receipt produced by the quickstart above, is stamped `simulated: true`
 
 The public deployment was separately verified against a live DataHub 1.6 instance: strong
 readiness covered 12 active entities and 9 lineage edges, and a reversible catalog writeback was
-confirmed by reread and restored. The guarded hosted workflow lets judges exercise the fixed
-containment scenario without credentials while keeping every mutation inside the `license.`
-allocation.
+confirmed by reread and restored. The guarded hosted workflow was also exercised end to end:
+the approval gate refused first, the approved live-evidence plan ran its two provable actions
+while escalating five unresolved descendants, and all 8 durable DataHub outcome writes were
+verified by reread. A final artifact reset preserved history, invalidated the approval, and
+returned the active evidence cycle to `not_started`.
 
 ---
 

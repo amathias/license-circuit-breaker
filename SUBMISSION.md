@@ -171,8 +171,9 @@ through bounded operation confirmations; it does not expose arbitrary targets or
 
 Two boundaries remain important:
 
-- Durable per-artifact revocation writeback is implemented and covered offline, but was not
-  exercised in the live closeout.
+- The guarded hosted workflow was exercised separately from the recorded offline demo. It
+  produced a truthful `residual` verdict and verified all 8 durable DataHub outcome writes by
+  reread; a final artifact reset preserved the audit history and invalidated the approval.
 - The offline workflow escalates one unresolved descendant. Live MCP evidence leaves five
   multi-hop descendants unresolved, so the live result escalates them instead of issuing an
   unearned all-clear.

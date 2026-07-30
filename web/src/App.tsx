@@ -260,8 +260,9 @@ export default function App() {
         <div>
           <h1>License Circuit Breaker</h1>
           <p className="tagline">
-            Executable data-rights revocation with DataHub. One upstream right is revoked;
-            every affected descendant is traced, contained under approval, and verified.
+            Executable data-rights revocation with DataHub. Represented descendants are traced,
+            provable containment runs under approval, and evidence gaps escalate instead of
+            earning a false all-clear.
           </p>
         </div>
         <div className="status-row">

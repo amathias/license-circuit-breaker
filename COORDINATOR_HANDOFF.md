@@ -13,7 +13,11 @@
 | Readiness contract | `mutations_enabled=true` and `mutation_mode=guarded` in `hackathon`; `mutation_mode=disabled` in `production`; trusted local modes report `mutation_mode=trusted` |
 | Verification | 732 tests passed, including clean archive install and installed offline slice; focused guard/API/console and evidence suites passed; Ruff check passed; TypeScript typecheck and production Vite build passed; `git diff --check` passed |
 | Pre-mutation review | The first guarded candidate was briefly promoted after CI, but no mutation was run. Review found that a new decision could inherit an older run in the default evidence view. The service was immediately rolled back to the prior read-only revision before the follow-up fix. |
-| Deployment status | Follow-up candidate is locally verified but not yet promoted. Deploy only after the exact pushed revision passes both GitHub Actions jobs. |
+| Deployment status | Corrected implementation revision `58588bdedbe1280f5070aade8b638051019fe89a` passed both GitHub Actions jobs, was promoted through the single-project script, and passed public API plus browser acceptance. |
+| Recovery point | Encrypted snapshot `snap-0ce2a0f47f6e99a58` completed at 100% before the live durable writeback |
+| Live guarded acceptance | Strong readiness was `ready`, 10/10, non-simulated, and `mutation_mode=guarded`; the pre-approval execute returned 409; the plan showed 8 decisions, 2 executable steps, and 5 truthful escalations; execution ran the 2 provable actions; 8/8 durable outcome writes were verified by reread with a public-safe evidence URI |
+| Final public state | Safe artifact reset rebuilt the exposed estate, retained governance history, appended a rejection, returned evidence to `not_started`, and made the next confirmed execution return 409. Prediction serves `v1`, search returns partner rows, and the export exposes 24 rows for the next judge. |
+| Live preserved denials | Missing confirmation returned 403 and `clear_governance=true` returned 403 after deployment |
 | Rollback | Redeploy the previously verified read-only revision `27be7866ff4de6c294122b6ed187c8a8b4825bbf`; no schema or infrastructure rollback is required |
 
 ADR-031 records why the public hackathon environment is guarded rather than read-only and why
