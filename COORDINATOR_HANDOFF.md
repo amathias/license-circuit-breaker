@@ -11,8 +11,9 @@
 | Reset semantics | Public reset rebuilds only the disposable estate, retains plans/approvals/runs/steps, and appends a rejection that invalidates the prior exact-plan approval |
 | Writeback boundary | Existing namespace checks still constrain every outcome to `license.*`; hosted evidence references use a logical URI rather than a server filesystem path |
 | Readiness contract | `mutations_enabled=true` and `mutation_mode=guarded` in `hackathon`; `mutation_mode=disabled` in `production`; trusted local modes report `mutation_mode=trusted` |
-| Verification | 731 tests passed, including clean archive install and installed offline slice; focused guard/API/console suite passed; Ruff check passed; TypeScript typecheck and production Vite build passed; `git diff --check` passed |
-| Deployment status | Candidate is locally verified but not yet promoted. Deploy only after the exact pushed revision passes both GitHub Actions jobs. |
+| Verification | 732 tests passed, including clean archive install and installed offline slice; focused guard/API/console and evidence suites passed; Ruff check passed; TypeScript typecheck and production Vite build passed; `git diff --check` passed |
+| Pre-mutation review | The first guarded candidate was briefly promoted after CI, but no mutation was run. Review found that a new decision could inherit an older run in the default evidence view. The service was immediately rolled back to the prior read-only revision before the follow-up fix. |
+| Deployment status | Follow-up candidate is locally verified but not yet promoted. Deploy only after the exact pushed revision passes both GitHub Actions jobs. |
 | Rollback | Redeploy the previously verified read-only revision `27be7866ff4de6c294122b6ed187c8a8b4825bbf`; no schema or infrastructure rollback is required |
 
 ADR-031 records why the public hackathon environment is guarded rather than read-only and why

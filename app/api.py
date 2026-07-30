@@ -568,7 +568,13 @@ def verify() -> dict[str, Any]:
 def _bundle_for(
     settings: Settings, run_id: str | None = None
 ) -> tuple[EvidenceBundle, ImpactPlan]:
-    """Assemble the current evidence bundle from durable state only."""
+    """Assemble the current evidence cycle from durable state only.
+
+    A new decision starts a new cycle. Until that exact approval has a run, the
+    default evidence view must not reuse an older execution or attach it to the
+    new decision. An explicit ``run_id`` remains a historical lookup and uses
+    the approval actually recorded on that run.
+    """
     built = _build_plan(settings)
     store = _store(settings)
     approvals = ApprovalStore(store)
@@ -577,9 +583,25 @@ def _bundle_for(
     approval = approvals.latest_for_plan(built.plan_hash())
     execution = None
 
-    candidates = journal.runs_for_plan(built.plan_hash())
-    target = run_id or (candidates[0]["run_id"] if candidates else None)
-    if target and approval is not None:
+    target: str | None = None
+    if run_id is not None:
+        run_row = journal.run(run_id)
+        if run_row is not None and run_row["plan_hash"] == built.plan_hash():
+            recorded_approval = approvals.get(run_row["approval_id"])
+            if recorded_approval is not None:
+                approval = recorded_approval
+                target = run_id
+    elif approval is not None and approval.approved:
+        target = next(
+            (
+                candidate["run_id"]
+                for candidate in journal.runs_for_plan(built.plan_hash())
+                if candidate["approval_id"] == approval.approval_id
+            ),
+            None,
+        )
+
+    if target is not None and approval is not None:
         execution = load_report(store, built, target, approval.approval_id)
 
     verification = verify_plan(built, _paths(settings)) if execution else None

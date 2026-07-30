@@ -522,6 +522,9 @@ class TestPublicMutationBoundary:
             "approved",
             "rejected",
         }
+        evidence = client.get("/api/evidence").json()
+        assert evidence["execution"] is None
+        assert evidence["verdict"] == "not_started"
 
         clock.advance()
         execute_after_reset = client.post(
@@ -533,6 +536,21 @@ class TestPublicMutationBoundary:
         )
         assert execute_after_reset.status_code == 409
         assert execute_after_reset.json()["detail"]["error"] == "ApprovalRefused"
+
+    def test_new_approval_does_not_inherit_an_older_execution(self, client):
+        first = _approve(client)
+        run_id = client.post("/api/execute", json={}).json()["execution"]["run_id"]
+        second = _approve(client, note="new review cycle")
+
+        current = client.get("/api/evidence").json()
+        historical = client.get(f"/api/evidence?run_id={run_id}").json()
+
+        assert second["approval_id"] != first["approval_id"]
+        assert current["approval"]["approval_id"] == second["approval_id"]
+        assert current["execution"] is None
+        assert current["verdict"] == "not_started"
+        assert historical["approval"]["approval_id"] == first["approval_id"]
+        assert historical["execution"]["approval_id"] == first["approval_id"]
 
     def test_public_reset_cannot_delete_governance_history(self, client, monkeypatch):
         monkeypatch.setenv("APP_ENV", "hackathon")
