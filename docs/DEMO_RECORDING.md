@@ -134,7 +134,7 @@ If check 2 failed, say neither sentence.
 **On screen:** switch to `http://127.0.0.1:8102`, URL bar visible. Stage 1, all three probes
 `exposed`. Point at the `P-` partner review IDs in the vector-search result.
 
-> A partner has revoked our right to use this review feed. That data has already reached a
+> A partner has revoked the right to use this review feed. That data has already reached a
 > model, a vector index, an endpoint, and an export — and all three are answering right now.
 
 ### 0:26–0:46 — Trigger and trace (stages 2 and 3)

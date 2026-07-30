@@ -249,8 +249,8 @@ nodes preceding the first ML URN — `license.reviews.partner_feed`,
 `dataset` URNs that this fix does not rename, so the reseed simply re-upserts
 them. This project emitted 13 aspect proposals across those three entities before
 the 422; DataHub adds key and browse-path aspects of its own, so the row count
-you observed will be higher and is expected — we are not able to reconcile the
-exact figure from here and are not claiming to.
+you observed will be higher and is expected — I cannot reconcile the exact
+figure from this workspace and do not claim to.
 
 **One thing to verify.** GMS rejected the *first* proposal for each ML URN, so no
 `mlModel` or `mlFeatureTable` entity should exist. This could not be confirmed
@@ -275,7 +275,7 @@ TypeError: streamable_http_client() got an unexpected keyword argument 'headers'
 
 | # | Defect | Resolution | ADR |
 |---|---|---|---|
-| 1 | `mcp` 1.28 changed the transport to `(url, *, http_client=None, terminate_on_close=True)`; `headers=` was removed, and the call site still passed it, so every session raised before issuing a request | The transport is handed an `httpx.AsyncClient` we build, carrying the bearer header, a split request/SSE timeout, and `follow_redirects=True` to match `mcp`'s own client | ADR-026 |
+| 1 | `mcp` 1.28 changed the transport to `(url, *, http_client=None, terminate_on_close=True)`; `headers=` was removed, and the call site still passed it, so every session raised before issuing a request | The transport is handed a project-built `httpx.AsyncClient` carrying the bearer header, a split request/SSE timeout, and `follow_redirects=True` to match `mcp`'s own client | ADR-026 |
 | 2 | The suite asserted on *source text* (`assert "streamable_http_client" in source`), which is true of a call that cannot execute — a pinned-dependency signature change was invisible to it | Tests bind against `inspect.signature` of the installed `mcp`; the transport spy validates every call against that same real signature; and one test drives the genuine unpatched transport and asserts the failure is a connection failure, not an unexpected-keyword `TypeError` | ADR-026 |
 | 3 | The client is never closed by the transport when it is passed in, and this transport opens one session per call — a connection pool leaked per MCP request | The client is opened in an `async with` that unwinds on success, on handshake failure, and on an exception thrown back into the session | ADR-026 |
 | 4 | A stored `timeout` was passed nowhere, so every request used library defaults | Request budget and SSE read budget are applied as an `httpx.Timeout`, and both defaults are asserted equal to `mcp`'s own | ADR-026 |
@@ -316,7 +316,7 @@ infrastructure fault.
 **The OpenSearch distinction.** Shared OpenSearch was down for part of the run,
 which makes `get_entities` genuinely fail. When it recovered and the same call
 returned data that readiness still could not use, the remaining fault was proven
-to be ours. That separation is the diagnosis, and the old code actively obscured
+to be project-side. That separation is the diagnosis, and the old code actively obscured
 it: an unreadable response and an empty catalog both rendered as "entities
 missing." They are opposite conditions and now report differently — a payload the
 normalizers do not recognize raises `PayloadError` naming the keys it did get,

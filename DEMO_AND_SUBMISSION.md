@@ -52,7 +52,7 @@ brackets where it differs.
 Stage 1. The prediction API answers, vector search returns partner rows, the CSV export
 resolves. [`python -m demo.cli probe`]
 
-> A partner has revoked our right to use this review feed. That data has already reached a
+> A partner has revoked the right to use this review feed. That data has already reached a
 > model, a vector index, an endpoint, and an export.
 
 ### 0:18–0:50 — Trigger and trace

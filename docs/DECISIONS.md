@@ -621,7 +621,7 @@ execute. The suite never touched the transport, so a signature change in a pinne
 dependency was invisible to it. Source-text assertions confirm an import survived
 a refactor; they cannot confirm a call works.
 
-**Decision: pass a client we build and own, and bind the tests to the installed
+**Decision: pass a project-owned client and bind the tests to the installed
 signature.**
 
 The client is constructed with `headers` carrying the bearer token, a split
@@ -637,7 +637,7 @@ quiet server. Both defaults are asserted equal to `mcp`'s own.
 
 **Lifecycle is the sharp edge.** `streamable_http_client` enters the client's
 context *only when it created the client itself* — read the source: `if not
-client_provided: await stack.enter_async_context(client)`. A client we pass in is
+client_provided: await stack.enter_async_context(client)`. A caller-provided client is
 never closed by the transport. Since this transport opens one session per call,
 an unclosed client would leak a connection pool per MCP request. The client is
 therefore opened in an `async with` that unwinds on success, on handshake
@@ -683,7 +683,7 @@ still reported **12/12 entities unusable**.
 **Two failures were tangled together and had to be separated.** Shared OpenSearch
 was down for part of the run, which makes `get_entities` genuinely fail. When it
 recovered and the same call returned data that readiness still could not use, the
-remaining fault was proven to be ours: parser compatibility, not infrastructure.
+remaining fault was proven to be project-side: parser compatibility, not infrastructure.
 That distinction is the whole diagnosis, and the old code actively obscured it,
 because both conditions rendered as "entities missing."
 
