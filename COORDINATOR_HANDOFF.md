@@ -1,6 +1,6 @@
 # Coordinator Handoff: License Circuit Breaker
 
-## 2026-07-29 anonymous mutation hardening — pending deployment
+## 2026-07-29 anonymous mutation hardening — deployed and verified
 
 | Field | Verified value |
 |---|---|
@@ -10,8 +10,9 @@
 | HTTP fault injection | Removed; unknown execution fields fail validation, while adapter failure coverage remains internal |
 | Console | Reads `mutations_enabled`, disables hosted mutation controls, and explains how to run the executable workflow locally |
 | Focused verification | 85 API/console tests passed; Ruff passed without cache; TypeScript checking passed; production Vite build passed to an isolated temporary output directory |
-| Broad local regression | The unchanged 700+ test suite exceeded two bounded Windows runs without emitting a failure; require the repository's clean GitHub Actions result before promotion |
-| Deployment status | Not deployed. The currently deployed product remains `36bf3ca579b1aaf114e0ca4987c26566704228eb` until this verified change is committed and promoted |
+| Broad regression | The exact commit passed both GitHub Actions jobs in run `30506949180`, closing the bounded local Windows-runner caveat |
+| Deployment status | Exact commit `3886bf4e2eefa2f6f010adb25a954ac02aba0fe8` is deployed; root, health, and strong readiness returned 200 after token refresh |
+| Public boundary probe | Anonymous demo reset returned 403 and readiness reported `mutations_enabled=false` |
 
 ADR-030 records the decision. Shared reverse-proxy limits remain defense in depth;
 they are not relied on as authentication.
