@@ -197,7 +197,7 @@ demonstrated DataHub graph."
 
 ## Recording checklist
 
-- [ ] Video is public and under three minutes.
+- [x] Video is public and under three minutes: <https://youtu.be/42FznbyhYlA> (2:18).
 - [ ] Prohibited content is visibly served before the trigger.
 - [ ] DataHub-derived impact is legible, including the unaffected branch.
 - [ ] The gate is shown refusing before any approval is recorded.

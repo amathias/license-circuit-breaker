@@ -17,10 +17,10 @@ own receipts; and writes the outcome back to DataHub.
 
 [Open the live judge console](https://license.datahub-hackathon.aaronmathias.com) ·
 [View the source](https://github.com/amathias/license-circuit-breaker) ·
+[Watch the public demo](https://youtu.be/42FznbyhYlA) ·
 [Follow the under-three-minute recording runbook](docs/DEMO_RECORDING.md)
 
-Demo video: **pending recording and public upload**. The repository does not claim that a video
-exists yet.
+Demo video: **[public on YouTube](https://youtu.be/42FznbyhYlA)** (2:18, English captions).
 
 Catalogs and governance tools can display provenance or warn that a license is
 incompatible. The operational gap begins after the warning: somebody still has to find and
@@ -227,6 +227,6 @@ cannot seed, slice, or load a single rule is not a working package.
 
 ## Submission
 
-Category: **Production ML Agents**, intentionally combined with **Agents That Do Real
-Work** — the reasoning is in [SUBMISSION.md](./SUBMISSION.md). Built new during the
+Primary category: **Production ML Agents** — the reasoning is in
+[SUBMISSION.md](./SUBMISSION.md). Built new during the
 submission period. Licensed Apache 2.0 — see [LICENSE](./LICENSE).

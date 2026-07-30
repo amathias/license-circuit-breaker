@@ -7,10 +7,8 @@ repository and the deployment can actually show.
 - **Public app:** <https://license.datahub-hackathon.aaronmathias.com>
 - **Public repository:** <https://github.com/amathias/license-circuit-breaker>
 - **License:** Apache 2.0, at the repository root
-- **Category:** Production ML Agents, intentionally combined with Agents That Do Real Work
-  (see "Category fit" below)
-- **Demo video:** not yet recorded. `docs/DEMO_RECORDING.md` is the runbook; the public link
-  goes into the Devpost video field once it exists.
+- **Primary category:** Production ML Agents
+- **Demo video:** <https://youtu.be/42FznbyhYlA> (2:18, public, English captions)
 
 > License Circuit Breaker supports compliance operations. It does not provide legal advice,
 > does not interpret contract text, and makes no determination about whether any legal or
@@ -95,10 +93,8 @@ that end to end:
 
 ## Category fit
 
-The rules permit one category or an intentional combination. This is an intentional
-combination of two, and the combination is the point rather than a hedge.
-
-**Production ML Agents** is the primary fit. The demo graph is an end-to-end ML lineage
+Select exactly one primary category in Devpost: **Production ML Agents**. The demo graph is an
+end-to-end ML lineage
 chain — source feed → normalized dataset → feature table → trained classifier → vector index
 → prediction endpoint → export — and the agent walks exactly that chain to respond to a
 production failure mode that ML teams actually have: a model and a retrieval index that are
@@ -107,10 +103,9 @@ response is ML-shaped too, not generic: retrain from an approved source, replace
 version, purge and rebuild the index, and then verify by reading the *active* model's
 training manifest rather than by trusting that the retrain step said it worked.
 
-**Agents That Do Real Work** is the second half, and it is what keeps the first half honest.
-The agent understands connected data through DataHub, takes action on real artifacts, and
-writes results back to the catalog confirmed by re-read. Without that, an ML-lineage agent
-is a report generator.
+The implementation also does real approval-gated work: it understands connected data through
+DataHub, takes action on real artifacts, and writes results back to the catalog confirmed by
+re-read. That is supporting product behavior, not a second category selection.
 
 **Not Metadata-Aware Code Generation.** Nothing here generates code for a repository.
 
@@ -395,8 +390,7 @@ Stated plainly, because a governance tool that oversells is worse than one that 
 
 ## Remaining manual steps before the Devpost form is submitted
 
-1. Record the demo using `docs/DEMO_RECORDING.md`, upload it publicly to YouTube or Vimeo,
-   confirm it is under three minutes, and put the link in the Devpost video field.
+1. Put the verified public demo URL, <https://youtu.be/42FznbyhYlA>, in the Devpost video field.
 2. Copy the tagline, short description, and the sections above into the Devpost form.
 3. Confirm on Devpost that the repository is public and the Apache 2.0 license is visible
    from the repository About area.
