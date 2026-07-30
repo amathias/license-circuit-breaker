@@ -131,10 +131,10 @@ so verification fails on over-reach as well as under-reach.
 
 ### The refusals are the product
 
-- `POST /api/execute` answers **409** with the reason unless a recorded approval covers that
-  exact plan. The gate is server-side, so it holds for anything that can reach the port —
-  and the console's Execute button is deliberately left enabled so a judge can watch it
-  refuse rather than find it greyed out.
+- In execution-enabled local or trusted live mode, `POST /api/execute` answers **409** with the
+  reason unless a recorded approval covers that exact plan. The local console keeps Execute
+  enabled so the refusal can be observed.
+- The anonymous hosted console is intentionally read-only; mutation endpoints answer **403**.
 - A contained endpoint answers **451 Unavailable For Legal Reasons**, not 404 or 500. A
   judge watching the network tab can tell containment from an outage.
 - `GET /api/readiness` answers **503** when degraded, with the full check list in the body.
@@ -153,16 +153,13 @@ in-memory substitute with the same client surface and the same namespace guard. 
 produced in that mode is stamped `simulated: true`, the console shows a banner, and the
 evidence report opens with one.
 
-**No live DataHub evidence is committed to this repository.** Everything under
-`examples/`, and every receipt produced by the quickstart above, is stamped
-`simulated: true`.
+**No live DataHub evidence is included in the repository examples.** Everything under `examples/`,
+and every receipt produced by the quickstart above, is stamped `simulated: true`.
 
-The deployed build has separately been verified against a live DataHub 1.6 instance by
-the deployment coordinator: readiness returned 10/10 with 12 active entities and 9
-lineage edges, and a reversible catalog writeback was confirmed by re-read and then
-rolled back. That run happened on the deployment host and its receipts stay there — it
-is recorded in [COORDINATOR_HANDOFF.md](./COORDINATOR_HANDOFF.md) and is **not**
-reproducible from this checkout, which is why nothing here is labelled as live.
+The public deployment was separately verified against a live DataHub 1.6 instance: strong
+readiness covered 12 active entities and 9 lineage edges, and a reversible catalog writeback was
+confirmed by reread and restored. Durable per-artifact revocation writeback remains
+offline-verified only.
 
 ---
 

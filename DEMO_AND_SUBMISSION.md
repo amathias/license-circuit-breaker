@@ -184,13 +184,9 @@ compliance dashboard. Three specifics worth naming:
 - "Automatically interprets every license or contract."
 - "Finds all copies, including untracked offline files."
 - "Cryptographically proves universal model unlearning."
-- "Verified against a live DataHub instance." — not true of anything **in this
-  repository**, and not true of the recording. The deployed build *was* verified live
-  by the deployment coordinator (see `COORDINATOR_HANDOFF.md`), but that run is not
-  committed here, is not what the video shows, and is not reproducible by a judge from
-  this checkout. If it comes up, say where it happened and that the repository's own
-  artifacts are simulated — do not let a live result borrow credibility for the
-  recording.
+- "The repository examples or video are live DataHub receipts." They are labeled simulations.
+  The public deployment was verified separately against live DataHub, including a reversible
+  write/reread/restore exercise; the durable per-artifact writeback remains offline-verified only.
 
 Prefer: "Executes and verifies policy actions for descendants represented in the
 demonstrated DataHub graph."
