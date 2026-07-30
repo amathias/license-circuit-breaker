@@ -932,6 +932,46 @@ to readiness; or if DataHub changes `restoreIndices` scoping.
 
 ---
 
+## ADR-030: The hosted judge application is read-only at the application boundary
+
+**Date:** 2026-07-29 · **Status:** accepted
+
+The deployed `APP_ENV=hackathon` service was described as a read-only judge
+surface, but its approval, execution, durable writeback, and demo-reset routes
+were still reachable anonymously. The approval gate limited execution order; it
+did not authenticate callers. More seriously, `clear_governance=true` could
+delete the local approval and run journals, and the HTTP execution body exposed
+the adapter fault injector used by tests.
+
+**Decision:** fail closed inside the FastAPI application for anonymous hosted
+environments. `hackathon` and `production` return 403 before any planning,
+filesystem, estate, governance, or DataHub work on:
+
+- `POST /api/approvals`;
+- `POST /api/execute`;
+- `POST /api/writeback`;
+- `POST /api/demo/reset`.
+
+The complete workflow remains available in the documented local
+`APP_ENV=offline` mode and in coordinator-controlled `APP_ENV=live` verification.
+Readiness exposes `mutations_enabled` so the console disables the corresponding
+controls and explains the boundary instead of inviting a request that will fail.
+
+The HTTP execution model now forbids unknown fields and accepts only `run_id`.
+Fault injection remains covered at the adapter/execution layer but is no longer
+selectable by an internet client or by the judge console.
+
+This is enforced in the application rather than relying only on the reverse
+proxy, so a proxy configuration error cannot silently reopen the workflow. Shared
+proxy rate and body limits remain useful defense in depth but are not the access
+control for these operations.
+
+**Revisit if:** the public deployment gains real authentication and per-role
+authorization. At that point the four operations can be enabled for authenticated
+operators without restoring HTTP fault injection.
+
+---
+
 ## Versions
 
 **No live DataHub evidence has been captured.** This session was barred from AWS

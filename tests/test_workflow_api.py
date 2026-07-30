@@ -195,25 +195,18 @@ class TestExecutionAndVerification:
         assert body["contained"] is True
         assert len(body["probes"]) == 8
 
-    def test_a_deliberately_failed_adapter_prevents_an_all_clear(self, client):
-        _approve(client)
-        execution = client.post(
+    def test_fault_injection_is_not_exposed_over_http(self, client):
+        response = client.post(
             "/api/execute", json={"fail_adapter": "export-quarantine"}
-        ).json()["execution"]
+        )
 
-        assert execution["fully_executed"] is False
-        assert any(r["reason"] == "action_failed" for r in execution["residual_exposure"])
-
-        verification = client.get("/api/verify").json()
-        assert verification["contained"] is False
-        # And the exposure is real, not just reported.
+        assert response.status_code == 422
+        assert response.json()["detail"][0]["type"] == "extra_forbidden"
         assert client.get("/api/demo/export").status_code == 200
 
     def test_a_run_can_be_resumed(self, client):
         _approve(client)
-        first = client.post(
-            "/api/execute", json={"fail_adapter": "export-quarantine"}
-        ).json()["execution"]
+        first = client.post("/api/execute", json={}).json()["execution"]
 
         second = client.post("/api/execute", json={"run_id": first["run_id"]}).json()[
             "execution"
@@ -370,3 +363,33 @@ class TestIsolation:
             not h["review_id"].startswith(APPROVED_PREFIX)
             for h in client.get("/api/demo/search").json()["hits"]
         )
+
+
+class TestPublicReadOnlyBoundary:
+    @pytest.mark.parametrize(
+        ("path", "payload"),
+        (
+            ("/api/approvals", {"approver": "anonymous@example.com"}),
+            ("/api/execute", {}),
+            ("/api/writeback", None),
+            ("/api/demo/reset", {"clear_governance": True}),
+        ),
+    )
+    def test_hackathon_mode_blocks_every_mutating_workflow_route(
+        self, client, monkeypatch, path, payload
+    ):
+        monkeypatch.setenv("APP_ENV", "hackathon")
+        reset_settings_cache()
+
+        response = client.post(path, json=payload) if payload is not None else client.post(path)
+
+        assert response.status_code == 403
+        assert "public demo is read-only" in response.json()["detail"]
+
+    def test_hackathon_readiness_tells_the_console_mutations_are_disabled(
+        self, client, monkeypatch
+    ):
+        monkeypatch.setenv("APP_ENV", "hackathon")
+        reset_settings_cache()
+
+        assert client.get("/api/readiness").json()["mutations_enabled"] is False

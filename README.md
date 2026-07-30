@@ -1,5 +1,7 @@
 # License Circuit Breaker
 
+[![CI](https://github.com/amathias/license-circuit-breaker/actions/workflows/ci.yml/badge.svg)](https://github.com/amathias/license-circuit-breaker/actions/workflows/ci.yml)
+
 **Executable data-rights revocation with DataHub.**
 
 Revoke one upstream data right and contain every affected downstream artifact.
@@ -23,6 +25,11 @@ exists yet.
 Catalogs and governance tools can display provenance or warn that a license is
 incompatible. The operational gap begins after the warning: somebody still has to find and
 disable every downstream use. This closes that gap and proves it closed.
+
+![License Circuit Breaker console showing verified probes and DataHub writeback](docs/assets/judge-console.png)
+
+_Local executable workflow evidence: downstream artifacts were probed directly and 8/8 DataHub
+status writes were verified by reread. The anonymous hosted console is intentionally read-only._
 
 ## Architecture
 

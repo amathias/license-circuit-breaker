@@ -1,5 +1,21 @@
 # Coordinator Handoff: License Circuit Breaker
 
+## 2026-07-29 anonymous mutation hardening — pending deployment
+
+| Field | Verified value |
+|---|---|
+| Scope | Application and console boundary only; no DataHub model, namespace, port, artifact adapter, or deployment topology change |
+| Hosted behavior | `APP_ENV=hackathon` and `production` return 403 for approval, execution, durable writeback, and demo reset before any mutation or DataHub work |
+| Local behavior | The complete workflow remains enabled in `APP_ENV=offline`; coordinator-controlled `APP_ENV=live` behavior is unchanged |
+| HTTP fault injection | Removed; unknown execution fields fail validation, while adapter failure coverage remains internal |
+| Console | Reads `mutations_enabled`, disables hosted mutation controls, and explains how to run the executable workflow locally |
+| Focused verification | 85 API/console tests passed; Ruff passed without cache; TypeScript checking passed; production Vite build passed to an isolated temporary output directory |
+| Broad local regression | The unchanged 700+ test suite exceeded two bounded Windows runs without emitting a failure; require the repository's clean GitHub Actions result before promotion |
+| Deployment status | Not deployed. The currently deployed product remains `36bf3ca579b1aaf114e0ca4987c26566704228eb` until this verified change is committed and promoted |
+
+ADR-030 records the decision. Shared reverse-proxy limits remain defense in depth;
+they are not relied on as authentication.
+
 ## 2026-07-29 public-demo boundary closeout
 
 | Field | Verified value |

@@ -95,7 +95,7 @@ export const api = {
       body: JSON.stringify({ approver, note, decision }),
     }),
 
-  execute: (options: { run_id?: string; fail_adapter?: string } = {}) =>
+  execute: (options: { run_id?: string } = {}) =>
     request<{ execution: Execution; approval_id: string }>('/api/execute', {
       method: 'POST',
       body: JSON.stringify(options),

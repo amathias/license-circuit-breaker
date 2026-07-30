@@ -160,6 +160,7 @@ class TestApiContract:
         body = client.get("/api/readiness").json()
         assert body["namespace"]["urn_prefix"] == "license."
         assert "simulated" in body
+        assert body["mutations_enabled"] is True
 
 
 class TestStaticServing:

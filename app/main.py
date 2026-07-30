@@ -20,7 +20,7 @@ from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.api import get_client
+from app.api import PUBLIC_READ_ONLY_ENVIRONMENTS, get_client
 from app.api import router as api_router
 from app.clients import is_offline
 from app.config import get_settings
@@ -90,6 +90,9 @@ class ReadinessResponse(BaseModel):
     #: True when running against the in-memory fake. Judges and the coordinator
     #: must be able to tell simulated runs from live ones at a glance.
     simulated: bool
+    #: False on the anonymous hosted judge surface. The complete workflow
+    #: remains available in the documented local/offline environment.
+    mutations_enabled: bool
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -139,6 +142,9 @@ def readiness(response: Response) -> ReadinessResponse:
             "domain": settings.datahub_domain,
         },
         simulated=is_offline(settings),
+        mutations_enabled=(
+            settings.app_env.casefold() not in PUBLIC_READ_ONLY_ENVIRONMENTS
+        ),
     )
 
 

@@ -28,9 +28,9 @@ import threading
 from typing import Any
 
 from fastapi import APIRouter, Body, HTTPException
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
-from adapters.containment import AdapterContext, AdapterRegistry, ContainmentError
+from adapters.containment import AdapterContext, AdapterRegistry
 from adapters.datahub import DataHubClient, DataHubError
 from app.approvals import APPROVED, REJECTED, ApprovalError, ApprovalStore, require_approval
 from app.clients import build_client, is_offline
@@ -46,7 +46,7 @@ from app.execution import (
 from app.namespace import NamespaceViolation
 from app.policy import get_policy
 from app.receipts import ReceiptLedger
-from app.rights import Action, License, Purpose, RightsEvent, RightsState
+from app.rights import License, Purpose, RightsEvent, RightsState
 from app.store import GovernanceStore
 from app.verification import verify_plan
 from app.workflow import (
@@ -64,6 +64,7 @@ router = APIRouter(prefix="/api")
 #: HTTP status for a governed refusal. Distinct from 404 (absent) and 503
 #: (unhealthy) so a probe can tell "contained" from "broken".
 LEGALLY_UNAVAILABLE = 451
+PUBLIC_READ_ONLY_ENVIRONMENTS = frozenset({"hackathon", "production"})
 
 _client_lock = threading.Lock()
 _client: DataHubClient | None = None
@@ -113,6 +114,24 @@ def _store(settings: Settings) -> GovernanceStore:
 
 def _ledger(settings: Settings) -> ReceiptLedger:
     return ReceiptLedger(settings.ensure_state_dir())
+
+
+def _require_demo_mutations(settings: Settings) -> None:
+    """Keep the hosted judge surface read-only.
+
+    The workflow remains executable in documented local ``offline`` mode and in
+    coordinator-controlled ``live`` verification. The public deployment uses
+    ``APP_ENV=hackathon`` and must not expose approval, execution, writeback, or
+    reset operations to anonymous internet clients.
+    """
+    if settings.app_env.casefold() in PUBLIC_READ_ONLY_ENVIRONMENTS:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "the public demo is read-only; run the approval and containment "
+                "workflow locally with APP_ENV=offline"
+            ),
+        )
 
 
 # --- rights event ------------------------------------------------------
@@ -344,6 +363,7 @@ def record_approval(request: ApprovalRequest = Body(...)) -> dict[str, Any]:
     scope nobody reviewed.
     """
     settings = get_settings()
+    _require_demo_mutations(settings)
     built = _build_plan(settings)
 
     if request.decision not in (APPROVED, REJECTED):
@@ -369,12 +389,16 @@ def record_approval(request: ApprovalRequest = Body(...)) -> dict[str, Any]:
 
 
 class ExecuteRequest(BaseModel):
-    """Optional controls for one containment run."""
+    """Optional resume control for one containment run.
+
+    Fault injection remains an internal adapter-testing capability and is not
+    accepted from the HTTP boundary.
+    """
+
+    model_config = ConfigDict(extra="forbid")
 
     #: Resume an existing run instead of starting a new one.
     run_id: str | None = None
-    #: Fail one adapter by name, to demonstrate residual-exposure reporting.
-    fail_adapter: str | None = None
 
 
 @router.post("/execute")
@@ -386,6 +410,7 @@ def execute(request: ExecuteRequest = Body(default=ExecuteRequest())) -> dict[st
     plan changed after review" need different responses from an operator.
     """
     settings = get_settings()
+    _require_demo_mutations(settings)
     built = _build_plan(settings)
     store = _store(settings)
 
@@ -402,7 +427,6 @@ def execute(request: ExecuteRequest = Body(default=ExecuteRequest())) -> dict[st
         namespace=settings.namespace,
         replacement_source_urn=built.event.replacement_source_urn,
         actor=approval.approver,
-        fault_injector=_fault_injector(request.fail_adapter),
     )
 
     try:
@@ -419,17 +443,6 @@ def execute(request: ExecuteRequest = Body(default=ExecuteRequest())) -> dict[st
         raise HTTPException(status_code=409, detail=str(exc)) from exc
 
     return {"execution": report.to_dict(), "approval_id": approval.approval_id}
-
-
-def _fault_injector(adapter_name: str | None):
-    if not adapter_name:
-        return None
-
-    def inject(adapter: str, urn: str, action: Action) -> None:
-        if adapter == adapter_name:
-            raise ContainmentError(f"injected failure: {adapter} was told to fail for this run")
-
-    return inject
 
 
 @router.get("/runs")
@@ -500,6 +513,7 @@ def writeback() -> dict[str, Any]:
     nothing behind it.
     """
     settings = get_settings()
+    _require_demo_mutations(settings)
     bundle, built = _bundle_for(settings)
 
     if bundle.execution is None:
@@ -607,6 +621,7 @@ class ResetRequest(BaseModel):
 def demo_reset(request: ResetRequest = Body(default=ResetRequest())) -> dict[str, Any]:
     """Rebuild the local estate deterministically, restoring the exposed state."""
     settings = get_settings()
+    _require_demo_mutations(settings)
     paths = _paths(settings)
 
     reset_estate(paths)

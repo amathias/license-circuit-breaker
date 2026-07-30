@@ -20,6 +20,7 @@ export interface Readiness {
   checks: Check[]
   namespace: Record<string, string>
   simulated: boolean
+  mutations_enabled: boolean
 }
 
 export interface RightsEventEnvelope {

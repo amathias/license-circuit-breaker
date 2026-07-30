@@ -42,7 +42,6 @@ type Busy =
   | 'probe'
   | 'approve'
   | 'execute'
-  | 'execute-fail'
   | 'resume'
   | 'verify'
   | 'writeback'
@@ -189,11 +188,11 @@ export default function App() {
       setApprovals(await api.approvals())
     })
 
-  const doExecute = (failAdapter?: string) =>
-    guarded(failAdapter ? 'execute-fail' : 'execute', async () => {
+  const doExecute = () =>
+    guarded('execute', async () => {
       setGateRefusal(null)
       try {
-        const result = await api.execute(failAdapter ? { fail_adapter: failAdapter } : {})
+        const result = await api.execute()
         setExecution(result.execution)
       } catch (exc) {
         if (exc instanceof ApiError && exc.status === 409) {
@@ -246,6 +245,7 @@ export default function App() {
   const approved = approval?.decision === 'approved'
   const verdict = evidence?.verdict ?? 'not_started'
   const selectedNode = graph?.nodes.find((n) => n.urn === selected) ?? null
+  const mutationsEnabled = readiness?.mutations_enabled ?? false
 
   return (
     <div className="app">
@@ -274,7 +274,7 @@ export default function App() {
           }`}>
             verdict: {verdict}
           </span>
-          <button onClick={doReset} disabled={busy !== null} className="danger">
+          <button onClick={doReset} disabled={busy !== null || !mutationsEnabled} className="danger">
             {busy === 'reset' ? <span className="spin" /> : 'Reset demo'}
           </button>
         </div>
@@ -297,6 +297,14 @@ export default function App() {
           </a>
         </span>
       </aside>
+
+      {!mutationsEnabled && readiness ? (
+        <div className="notice info">
+          <strong>Hosted workflow is read-only.</strong> Approval, containment, writeback, and
+          reset are disabled on the anonymous public deployment. Use the repository&apos;s
+          documented <code>APP_ENV=offline</code> setup to run the complete executable workflow.
+        </div>
+      ) : null}
 
       {readiness?.simulated ? (
         <div className="notice warn">
@@ -604,11 +612,14 @@ export default function App() {
           <button
             className="primary"
             onClick={() => doApprove('approved')}
-            disabled={busy !== null || !approver.trim()}
+            disabled={busy !== null || !approver.trim() || !mutationsEnabled}
           >
             {busy === 'approve' ? <span className="spin" /> : 'Approve this exact plan'}
           </button>
-          <button onClick={() => doApprove('rejected')} disabled={busy !== null || !approver.trim()}>
+          <button
+            onClick={() => doApprove('rejected')}
+            disabled={busy !== null || !approver.trim() || !mutationsEnabled}
+          >
             Reject
           </button>
         </div>
@@ -637,14 +648,15 @@ export default function App() {
         <div className="actions" style={{ marginBottom: 12 }}>
           {/* Deliberately enabled without an approval, so the refusal can be
               demonstrated rather than merely described. */}
-          <button className="primary" onClick={() => doExecute()} disabled={busy !== null}>
+          <button
+            className="primary"
+            onClick={() => doExecute()}
+            disabled={busy !== null || !mutationsEnabled}
+          >
             {busy === 'execute' ? <span className="spin" /> : 'Execute containment'}
           </button>
-          <button onClick={() => doExecute('export-quarantine')} disabled={busy !== null}>
-            {busy === 'execute-fail' ? <span className="spin" /> : 'Execute with a failing adapter'}
-          </button>
           {execution && !execution.fully_executed ? (
-            <button onClick={doResume} disabled={busy !== null}>
+            <button onClick={doResume} disabled={busy !== null || !mutationsEnabled}>
               {busy === 'resume' ? <span className="spin" /> : `Resume ${execution.run_id}`}
             </button>
           ) : null}
@@ -788,7 +800,11 @@ export default function App() {
         subtitle={writeback ? `${writeback.verified}/${writeback.attempted} statuses verified` : ''}
       >
         <div className="actions" style={{ marginBottom: 12 }}>
-          <button className="primary" onClick={doWriteback} disabled={busy !== null || !execution}>
+          <button
+            className="primary"
+            onClick={doWriteback}
+            disabled={busy !== null || !execution || !mutationsEnabled}
+          >
             {busy === 'writeback' ? <span className="spin" /> : 'Write the outcome back to DataHub'}
           </button>
           <span className="muted">
