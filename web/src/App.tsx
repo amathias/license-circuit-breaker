@@ -184,7 +184,12 @@ export default function App() {
   const doApprove = (decision: 'approved' | 'rejected') =>
     guarded('approve', async () => {
       setGateRefusal(null)
-      await api.approve(approver, note, decision)
+      await api.approve(
+        approver,
+        note,
+        decision,
+        readiness?.mutation_mode === 'guarded',
+      )
       setApprovals(await api.approvals())
     })
 
@@ -192,7 +197,7 @@ export default function App() {
     guarded('execute', async () => {
       setGateRefusal(null)
       try {
-        const result = await api.execute()
+        const result = await api.execute({}, readiness?.mutation_mode === 'guarded')
         setExecution(result.execution)
       } catch (exc) {
         if (exc instanceof ApiError && exc.status === 409) {
@@ -226,13 +231,14 @@ export default function App() {
 
   const doWriteback = () =>
     guarded('writeback', async () => {
-      setWriteback(await api.writeback())
+      setWriteback(await api.writeback(readiness?.mutation_mode === 'guarded'))
       await refresh()
     })
 
   const doReset = () =>
     guarded('reset', async () => {
-      await api.reset(true)
+      const guardedPublicDemo = readiness?.mutation_mode === 'guarded'
+      await api.reset(!guardedPublicDemo, guardedPublicDemo)
       setExecution(null)
       setVerification(null)
       setWriteback(null)
@@ -246,6 +252,7 @@ export default function App() {
   const verdict = evidence?.verdict ?? 'not_started'
   const selectedNode = graph?.nodes.find((n) => n.urn === selected) ?? null
   const mutationsEnabled = readiness?.mutations_enabled ?? false
+  const publicGuarded = readiness?.mutation_mode === 'guarded'
 
   return (
     <div className="app">
@@ -298,7 +305,13 @@ export default function App() {
         </span>
       </aside>
 
-      {!mutationsEnabled && readiness ? (
+      {publicGuarded ? (
+        <div className="notice info">
+          <strong>Hosted workflow is interactive and guarded.</strong> The console obtains a
+          fresh one-time confirmation for each approval, execution, writeback, and reset.
+          Mutations are serialized and rate-limited within the isolated demo allocation.
+        </div>
+      ) : !mutationsEnabled && readiness ? (
         <div className="notice info">
           <strong>Hosted workflow is read-only.</strong> Approval, containment, writeback, and
           reset are disabled on the anonymous public deployment. Use the repository&apos;s
@@ -656,7 +669,15 @@ export default function App() {
             {busy === 'execute' ? <span className="spin" /> : 'Execute containment'}
           </button>
           {execution && !execution.fully_executed ? (
-            <button onClick={doResume} disabled={busy !== null || !mutationsEnabled}>
+            <button
+              onClick={doResume}
+              disabled={busy !== null || !mutationsEnabled || publicGuarded}
+              title={
+                publicGuarded
+                  ? 'Resume is available in a trusted local environment'
+                  : undefined
+              }
+            >
               {busy === 'resume' ? <span className="spin" /> : `Resume ${execution.run_id}`}
             </button>
           ) : null}

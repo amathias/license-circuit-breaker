@@ -972,12 +972,48 @@ operators without restoring HTTP fault injection.
 
 ---
 
+## ADR-031: The hosted judge workflow is interactive through bounded confirmations
+
+**Date:** 2026-07-30 · **Status:** accepted; supersedes ADR-030 for `APP_ENV=hackathon`
+
+The read-only boundary in ADR-030 removed anonymous mutation risk, but it also made the
+Grand Prize candidate the only portfolio demo whose judge could not exercise its central
+end-to-end behavior. The fixed scenario is already confined to disposable local artifacts
+and the `license.` DataHub allocation, so the remaining risk can be bounded without exposing
+arbitrary governance operations.
+
+**Decision:** `APP_ENV=hackathon` permits approval, fresh execution, durable writeback, and
+artifact reset only when the caller presents a short-lived, single-use confirmation bound to
+that client and that exact operation. The application enforces single-flight mutation,
+one-second cooldown, per-client and global sliding-window limits, and bounded pending
+confirmations. The console obtains confirmations immediately before each operation and retries
+once only when the server supplies `Retry-After`.
+
+The boundary remains deliberately narrower than the trusted local workflow:
+
+- production remains read-only;
+- public execution cannot resume another run;
+- public reset cannot delete approvals, plans, runs, or steps;
+- public reset appends a rejection for the exact plan, invalidating prior approval while
+  preserving the audit history;
+- the internal adapter fault injector remains absent from the HTTP model;
+- writeback targets remain namespace-checked and the public evidence reference never exposes
+  a server filesystem path.
+
+Confirmations are an abuse-control acknowledgement, not identity or authentication. The
+approval remains a demo governance record, not proof of a real person's authority. Real
+production use still requires authenticated role authorization.
+
+**Revisit if:** the deployment becomes multi-worker, in which case the process-local guard must
+move to shared atomic state; or if authenticated operators are introduced.
+
+---
+
 ## Versions
 
-**No live DataHub evidence has been captured.** This session was barred from AWS
-access, so no connection to the shared instance was made and no token was
-requested or handled. Live versions must be captured during the coordinator's
-verification pass.
+**No live DataHub evidence was captured in the project-development session.** Live verification
+belongs to the coordinator and is summarized in `COORDINATOR_HANDOFF.md`; repository examples
+remain simulated and contain no private deployment receipts or credentials.
 
 Pinned and installed locally: `acryl-datahub` 1.6.0.x (matching the coordinator's
 DataHub 1.6.0 stack), `mcp` 1.28.1, Python 3.13.2, ruff 0.16.0, pytest 8.x.

@@ -1,11 +1,8 @@
 /**
  * The API client.
  *
- * Two things it deliberately does not do: retry, and hide failures. A judge
- * clicking Execute needs to see the refusal that comes back, not a spinner that
- * quietly tries again. `ApiError` carries the status and the parsed body so the
- * console can show the *reason* a gate refused, which is the whole point of
- * having a gate.
+ * Failures stay visible. The only automatic retry is one bounded retry for a
+ * guarded public mutation after the server's explicit Retry-After interval.
  */
 
 import type {
@@ -26,12 +23,19 @@ import type {
 export class ApiError extends Error {
   readonly status: number
   readonly body: unknown
+  readonly retryAfterSeconds: number | null
 
-  constructor(status: number, body: unknown, message: string) {
+  constructor(
+    status: number,
+    body: unknown,
+    message: string,
+    retryAfterSeconds: number | null = null,
+  ) {
     super(message)
     this.name = 'ApiError'
     this.status = status
     this.body = body
+    this.retryAfterSeconds = retryAfterSeconds
   }
 
   /** A governed refusal, as opposed to a fault. */
@@ -54,24 +58,73 @@ export class ApiError extends Error {
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
   const response = await fetch(path, {
-    headers: { 'Content-Type': 'application/json' },
     ...init,
+    headers: {
+      'Content-Type': 'application/json',
+      ...(init?.headers ?? {}),
+    },
   })
 
   let body: unknown = null
-  const text = await response.text()
-  if (text) {
+  const responseText = await response.text()
+  if (responseText) {
     try {
-      body = JSON.parse(text)
+      body = JSON.parse(responseText)
     } catch {
-      body = text
+      body = responseText
     }
   }
 
   if (!response.ok) {
-    throw new ApiError(response.status, body, `${init?.method ?? 'GET'} ${path} → ${response.status}`)
+    const retryAfter = Number.parseInt(response.headers.get('Retry-After') ?? '', 10)
+    throw new ApiError(
+      response.status,
+      body,
+      `${init?.method ?? 'GET'} ${path} failed with ${response.status}`,
+      Number.isFinite(retryAfter) ? retryAfter : null,
+    )
   }
   return body as T
+}
+
+type DemoOperation = 'approve' | 'execute' | 'writeback' | 'reset'
+
+async function confirmation(operation: DemoOperation): Promise<string> {
+  const result = await request<{ confirmation: string }>('/api/demo/confirmation', {
+    method: 'POST',
+    body: JSON.stringify({ operation }),
+  })
+  return result.confirmation
+}
+
+function delay(milliseconds: number): Promise<void> {
+  return new Promise((resolve) => window.setTimeout(resolve, milliseconds))
+}
+
+async function mutation<T>(
+  path: string,
+  operation: DemoOperation,
+  guarded: boolean,
+  init: RequestInit,
+): Promise<T> {
+  if (!guarded) return request<T>(path, init)
+
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const token = await confirmation(operation)
+    try {
+      return await request<T>(path, {
+        ...init,
+        headers: {
+          ...(init.headers ?? {}),
+          'X-Demo-Confirmation': token,
+        },
+      })
+    } catch (error) {
+      if (!(error instanceof ApiError) || error.status !== 429 || attempt > 0) throw error
+      await delay((error.retryAfterSeconds ?? 1) * 1000)
+    }
+  }
+  throw new Error('public demo mutation retry exhausted')
 }
 
 export const api = {
@@ -80,7 +133,7 @@ export const api = {
     // console needs to render. Fetching it as a normal error would throw away
     // the check list, so it is read directly.
     fetch('/api/readiness')
-      .then(async (r) => (await r.json()) as Readiness)
+      .then(async (response) => (await response.json()) as Readiness)
       .catch(() => null),
 
   health: () => request<{ status: string; uptime_seconds: number }>('/api/health'),
@@ -89,40 +142,59 @@ export const api = {
   plan: () => request<Plan>('/api/plan'),
   approvals: () => request<ApprovalState>('/api/approvals'),
 
-  approve: (approver: string, note: string, decision = 'approved') =>
-    request<{ approval: Approval }>('/api/approvals', {
+  approve: (approver: string, note: string, decision = 'approved', guarded = false) =>
+    mutation<{ approval: Approval }>('/api/approvals', 'approve', guarded, {
       method: 'POST',
       body: JSON.stringify({ approver, note, decision }),
     }),
 
-  execute: (options: { run_id?: string } = {}) =>
-    request<{ execution: Execution; approval_id: string }>('/api/execute', {
-      method: 'POST',
-      body: JSON.stringify(options),
-    }),
+  execute: (options: { run_id?: string } = {}, guarded = false) =>
+    mutation<{ execution: Execution; approval_id: string }>(
+      '/api/execute',
+      'execute',
+      guarded,
+      {
+        method: 'POST',
+        body: JSON.stringify(options),
+      },
+    ),
 
   runs: () => request<{ runs: { run_id: string; status: string }[] }>('/api/runs'),
   verify: () => request<Verification>('/api/verify'),
-  writeback: () => request<WritebackResult>('/api/writeback', { method: 'POST' }),
+  writeback: (guarded = false) =>
+    mutation<WritebackResult>('/api/writeback', 'writeback', guarded, { method: 'POST' }),
   evidence: () => request<Evidence>('/api/evidence'),
   estate: () => request<EstateStatus>('/api/estate'),
 
   predict: (text: string) =>
-    request<{ sentiment: string; confidence: number; model_version: string; training_sources: string[] }>(
-      '/api/demo/predict',
-      { method: 'POST', body: JSON.stringify({ text }) },
+    request<{
+      sentiment: string
+      confidence: number
+      model_version: string
+      training_sources: string[]
+    }>('/api/demo/predict', {
+      method: 'POST',
+      body: JSON.stringify({ text }),
+    }),
+
+  search: (query: string) =>
+    request<{ hits: SearchHit[]; count: number }>(
+      `/api/demo/search?q=${encodeURIComponent(query)}`,
     ),
 
-  search: (q: string) =>
-    request<{ hits: SearchHit[]; count: number }>(`/api/demo/search?q=${encodeURIComponent(q)}`),
+  exportFile: () =>
+    request<{ rows: number; header: string; preview: string[] }>('/api/demo/export'),
 
-  exportFile: () => request<{ rows: number; header: string; preview: string[] }>('/api/demo/export'),
-
-  reset: (clearGovernance: boolean) =>
-    request<{ summary: string; governance_cleared: boolean }>('/api/demo/reset', {
-      method: 'POST',
-      body: JSON.stringify({ clear_governance: clearGovernance }),
-    }),
+  reset: (clearGovernance: boolean, guarded = false) =>
+    mutation<{ summary: string; governance_cleared: boolean; approval_invalidated: boolean }>(
+      '/api/demo/reset',
+      'reset',
+      guarded,
+      {
+        method: 'POST',
+        body: JSON.stringify({ clear_governance: clearGovernance }),
+      },
+    ),
 }
 
 /** The readable middle of a tuple URN. */

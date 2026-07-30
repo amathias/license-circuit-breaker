@@ -161,6 +161,7 @@ class TestApiContract:
         assert body["namespace"]["urn_prefix"] == "license."
         assert "simulated" in body
         assert body["mutations_enabled"] is True
+        assert body["mutation_mode"] == "trusted"
 
 
 class TestStaticServing:

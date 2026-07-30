@@ -20,7 +20,11 @@ from fastapi import FastAPI, Response
 from fastapi.staticfiles import StaticFiles
 from pydantic import BaseModel
 
-from app.api import PUBLIC_READ_ONLY_ENVIRONMENTS, get_client
+from app.api import (
+    PUBLIC_GUARDED_ENVIRONMENTS,
+    PUBLIC_READ_ONLY_ENVIRONMENTS,
+    get_client,
+)
 from app.api import router as api_router
 from app.clients import is_offline
 from app.config import get_settings
@@ -90,9 +94,10 @@ class ReadinessResponse(BaseModel):
     #: True when running against the in-memory fake. Judges and the coordinator
     #: must be able to tell simulated runs from live ones at a glance.
     simulated: bool
-    #: False on the anonymous hosted judge surface. The complete workflow
-    #: remains available in the documented local/offline environment.
+    #: True when workflow mutations may be attempted.
     mutations_enabled: bool
+    #: How mutation access is controlled in this environment.
+    mutation_mode: Literal["trusted", "guarded", "disabled"]
 
 
 @app.get("/api/health", response_model=HealthResponse)
@@ -130,6 +135,14 @@ def readiness(response: Response) -> ReadinessResponse:
     )
     if not report.ready:
         response.status_code = SERVICE_UNAVAILABLE
+    environment = settings.app_env.casefold()
+    mutation_mode: Literal["trusted", "guarded", "disabled"]
+    if environment in PUBLIC_GUARDED_ENVIRONMENTS:
+        mutation_mode = "guarded"
+    elif environment in PUBLIC_READ_ONLY_ENVIRONMENTS:
+        mutation_mode = "disabled"
+    else:
+        mutation_mode = "trusted"
     return ReadinessResponse(
         status=report.status,
         project_slug=settings.project_slug,
@@ -142,9 +155,8 @@ def readiness(response: Response) -> ReadinessResponse:
             "domain": settings.datahub_domain,
         },
         simulated=is_offline(settings),
-        mutations_enabled=(
-            settings.app_env.casefold() not in PUBLIC_READ_ONLY_ENVIRONMENTS
-        ),
+        mutations_enabled=mutation_mode != "disabled",
+        mutation_mode=mutation_mode,
     )
 
 

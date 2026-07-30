@@ -12,8 +12,10 @@ from __future__ import annotations
 import pytest
 from fastapi.testclient import TestClient
 
-from app.api import LEGALLY_UNAVAILABLE
+import app.api as api_module
+from app.api import LEGALLY_UNAVAILABLE, get_client
 from app.config import get_settings, reset_settings_cache
+from app.demo_guard import DemoMutationGuard
 from app.main import app
 from demo import graph
 from demo.corpus import APPROVED_PREFIX, PARTNER_PREFIX
@@ -365,7 +367,24 @@ class TestIsolation:
         )
 
 
-class TestPublicReadOnlyBoundary:
+class _Clock:
+    def __init__(self) -> None:
+        self.now = 100.0
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float = 1.0) -> None:
+        self.now += seconds
+
+
+def _public_confirmation(client: TestClient, operation: str) -> str:
+    response = client.post("/api/demo/confirmation", json={"operation": operation})
+    assert response.status_code == 200, response.text
+    return response.json()["confirmation"]
+
+
+class TestPublicMutationBoundary:
     @pytest.mark.parametrize(
         ("path", "payload"),
         (
@@ -375,7 +394,7 @@ class TestPublicReadOnlyBoundary:
             ("/api/demo/reset", {"clear_governance": True}),
         ),
     )
-    def test_hackathon_mode_blocks_every_mutating_workflow_route(
+    def test_hackathon_mode_requires_an_operation_confirmation(
         self, client, monkeypatch, path, payload
     ):
         monkeypatch.setenv("APP_ENV", "hackathon")
@@ -384,12 +403,158 @@ class TestPublicReadOnlyBoundary:
         response = client.post(path, json=payload) if payload is not None else client.post(path)
 
         assert response.status_code == 403
-        assert "public demo is read-only" in response.json()["detail"]
+        assert "operation-bound demo confirmation" in response.json()["detail"]
 
-    def test_hackathon_readiness_tells_the_console_mutations_are_disabled(
+    def test_hackathon_readiness_tells_the_console_mutations_are_guarded(
         self, client, monkeypatch
     ):
         monkeypatch.setenv("APP_ENV", "hackathon")
         reset_settings_cache()
 
-        assert client.get("/api/readiness").json()["mutations_enabled"] is False
+        body = client.get("/api/readiness").json()
+        assert body["mutations_enabled"] is True
+        assert body["mutation_mode"] == "guarded"
+
+    def test_guard_runs_before_request_body_validation(self, client, monkeypatch):
+        monkeypatch.setenv("APP_ENV", "hackathon")
+        reset_settings_cache()
+
+        response = client.post("/api/approvals", json={})
+
+        assert response.status_code == 403
+        assert "operation-bound demo confirmation" in response.json()["detail"]
+
+    def test_confirmation_is_one_time_and_operation_bound(self, client, monkeypatch):
+        monkeypatch.setenv("APP_ENV", "hackathon")
+        reset_settings_cache()
+        clock = _Clock()
+        monkeypatch.setattr(
+            api_module,
+            "_demo_guard",
+            DemoMutationGuard(clock=clock, token_factory=lambda _: "confirm-once"),
+        )
+
+        token = _public_confirmation(client, "approve")
+        wrong_route = client.post(
+            "/api/execute",
+            headers={"X-Demo-Confirmation": token},
+            json={},
+        )
+        assert wrong_route.status_code == 403
+
+        reused = client.post(
+            "/api/approvals",
+            headers={"X-Demo-Confirmation": token},
+            json={"approver": "judge@example.com"},
+        )
+        assert reused.status_code == 403
+
+    def test_guarded_public_workflow_runs_and_reset_invalidates_approval(
+        self, client, monkeypatch
+    ):
+        offline_client = get_client(get_settings())
+        monkeypatch.setenv("APP_ENV", "hackathon")
+        reset_settings_cache()
+        monkeypatch.setattr(api_module, "build_client", lambda _settings: offline_client)
+        clock = _Clock()
+        monkeypatch.setattr(
+            api_module,
+            "_demo_guard",
+            DemoMutationGuard(
+                clock=clock,
+                token_factory=lambda _: f"confirmation-{clock.now}",
+            ),
+        )
+
+        approve_token = _public_confirmation(client, "approve")
+        approved = client.post(
+            "/api/approvals",
+            headers={"X-Demo-Confirmation": approve_token},
+            json={"approver": "judge@example.com", "note": "reviewed"},
+        )
+        assert approved.status_code == 200, approved.text
+
+        clock.advance()
+        execute_token = _public_confirmation(client, "execute")
+        executed = client.post(
+            "/api/execute",
+            headers={"X-Demo-Confirmation": execute_token},
+            json={},
+        )
+        assert executed.status_code == 200, executed.text
+        run_id = executed.json()["execution"]["run_id"]
+
+        clock.advance()
+        resume_token = _public_confirmation(client, "execute")
+        resume = client.post(
+            "/api/execute",
+            headers={"X-Demo-Confirmation": resume_token},
+            json={"run_id": run_id},
+        )
+        assert resume.status_code == 403
+        assert "starts a fresh run" in resume.json()["detail"]
+
+        clock.advance()
+        writeback_token = _public_confirmation(client, "writeback")
+        written = client.post(
+            "/api/writeback",
+            headers={"X-Demo-Confirmation": writeback_token},
+        )
+        assert written.status_code == 200, written.text
+        assert written.json()["evidence_path"].startswith(
+            "license-circuit-breaker://evidence/"
+        )
+
+        clock.advance()
+        reset_token = _public_confirmation(client, "reset")
+        reset = client.post(
+            "/api/demo/reset",
+            headers={"X-Demo-Confirmation": reset_token},
+            json={"clear_governance": False},
+        )
+        assert reset.status_code == 200, reset.text
+        assert reset.json()["governance_cleared"] is False
+        assert reset.json()["approval_invalidated"] is True
+
+        approvals = client.get("/api/approvals").json()
+        assert approvals["current"]["decision"] == "rejected"
+        assert {row["decision"] for row in approvals["history"]} >= {
+            "approved",
+            "rejected",
+        }
+
+        clock.advance()
+        execute_after_reset = client.post(
+            "/api/execute",
+            headers={
+                "X-Demo-Confirmation": _public_confirmation(client, "execute")
+            },
+            json={},
+        )
+        assert execute_after_reset.status_code == 409
+        assert execute_after_reset.json()["detail"]["error"] == "ApprovalRefused"
+
+    def test_public_reset_cannot_delete_governance_history(self, client, monkeypatch):
+        monkeypatch.setenv("APP_ENV", "hackathon")
+        reset_settings_cache()
+        monkeypatch.setattr(api_module, "_demo_guard", DemoMutationGuard())
+
+        token = _public_confirmation(client, "reset")
+        response = client.post(
+            "/api/demo/reset",
+            headers={"X-Demo-Confirmation": token},
+            json={"clear_governance": True},
+        )
+        assert response.status_code == 403
+        assert "may not delete approval or execution history" in response.json()["detail"]
+
+    @pytest.mark.parametrize(
+        "path",
+        ("/api/approvals", "/api/execute", "/api/writeback", "/api/demo/reset"),
+    )
+    def test_production_mode_remains_read_only(self, client, monkeypatch, path):
+        monkeypatch.setenv("APP_ENV", "production")
+        reset_settings_cache()
+        response = client.post(path, json={})
+        assert response.status_code == 403
+        assert "production environment" in response.json()["detail"]

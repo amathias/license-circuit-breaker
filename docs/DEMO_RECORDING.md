@@ -94,7 +94,7 @@ around it and do not narrate a claim the screen cannot support.
 |---|---|---|---|
 | 1 | Public app reachable | `https://license.datahub-hackathon.aaronmathias.com/` returns the console in a browser | Record segment 0 as the repository only, and cut the public-URL narration entirely |
 | 2 | Public readiness | `GET /api/readiness` on the public host returns **200** with all checks passed | Do not show or mention public readiness. Skip to check 4 and record segment 0 as URL bar plus repository only |
-| 3 | Public host untouched | You have run **no** mutating request against the public host — no execute, no writeback, no reset, no seed | Stop. That is a coordinator-owned shared instance; see "Never, during a take" |
+| 3 | Recording boundary | The take uses the local deterministic workflow; the public tab is used only to establish the deployed URL | Keep the `simulated` boundary explicit and do not mix public and local evidence in one claimed run |
 | 4 | Public repository | `https://github.com/amathias/license-circuit-breaker` loads while signed out, and the Apache-2.0 badge is visible on the repository page | Fix the repository visibility before recording; it is a submission requirement |
 | 5 | Local masthead | Shows `verdict: not_started`, the amber `DataHub: simulated` pill, and a readiness pill | Press **Reset demo**; if the verdict is still not `not_started`, the journals did not clear |
 | 6 | Stage 1 | All three probes read **exposed**, and `P-` review IDs are visible in the vector-search result | Re-run `estate reset && estate build`; the partner rows are not being served |
@@ -116,8 +116,8 @@ are what to say; keep them close, because they are calibrated to what the screen
 legible, for about six seconds. Then a new tab at
 `https://github.com/amathias/license-circuit-breaker`, showing the Apache-2.0 license.
 
-**Do not** click Execute, Approve, Write back, or Reset on the public host. Read-only frames
-only.
+This recording used the local deterministic workflow. The hosted judge console was subsequently
+opened for the same fixed workflow through one-time, rate-limited mutation confirmations.
 
 > License Circuit Breaker is deployed here and the source is Apache-2.0 licensed here.
 
@@ -247,10 +247,9 @@ Three claims are prohibited outright in this recording, in any wording:
 
 ## Never, during a take
 
-- Do not run **any** mutating request against the public host: no Execute, no Approve, no
-  Write back, no Reset, no seed, no reset/restore. It is a coordinator-owned shared instance
-  carrying four sibling projects, and the durable revocation writeback has never been
-  exercised live. The public segment is read-only frames and nothing else.
+- For recording, keep the take on the deterministic local workflow so its `simulated` boundary is
+  visible and reproducible. Judges may use the hosted fixed scenario; seed, catalog reset/restore,
+  arbitrary targets, run resume, and governance-history deletion remain unavailable there.
 - Do not open an SSM session, an AWS console, a DataHub admin page, or any private evidence
   on camera.
 - Do not show `.env`, a token value, or a receipt file.

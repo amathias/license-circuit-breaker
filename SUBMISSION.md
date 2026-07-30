@@ -67,7 +67,7 @@ that end to end:
 4. **Fail-closed escalation.** Escalation rules sit at the top of the table by precedence,
    so incomplete lineage always beats a confident-looking containment verdict. Missing
    evidence produces an escalation, never an all-clear.
-5. **Server-side approval gate.** In execution-enabled local or trusted live mode, enforcement
+5. **Server-side approval gate.** In every execution-enabled mode, enforcement
    refuses with HTTP 409 unless a recorded approval covers that exact plan hash. Regenerate the
    plan and the approval stops applying.
 6. **Real containment.** Freeze an API, quarantine an export, purge and rebuild a vector
@@ -82,9 +82,13 @@ that end to end:
 
 ### The refusals are the product
 
-- In execution-enabled local or trusted live mode, `POST /api/execute` answers **409** with the
+- In every execution-enabled mode, `POST /api/execute` answers **409** with the
   reason when no approval covers the plan.
-- The anonymous hosted console is intentionally read-only; its mutation endpoints answer **403**.
+- The hosted judge workflow automatically obtains a fresh one-time confirmation for each
+  approval, execution, writeback, and artifact reset. The operations are serialized,
+  cooldown-controlled, rate-limited, and fixed to this project's isolated scenario.
+- Public reset cannot delete governance history and invalidates the prior approval. Public resume
+  and the internal adapter fault injector are not exposed.
 - A contained endpoint answers **451 Unavailable For Legal Reasons** — not 404, not 500 —
   so a judge watching the network tab can tell containment from an outage.
 - `GET /api/readiness` answers **503** with the full check list when degraded.
@@ -162,7 +166,8 @@ reports label that boundary clearly.
 
 Public-environment verification established 12 active project entities, 9 lineage edges, strong
 readiness, reversible write/reread/restore behavior, reset/readiness/restore transitions, and no
-new rows in sibling projects. The anonymous hosted console remains read-only.
+new rows in sibling projects. The hosted judge console exposes the fixed end-to-end workflow
+through bounded operation confirmations; it does not expose arbitrary targets or fault injection.
 
 Two boundaries remain important:
 
@@ -202,8 +207,9 @@ React + TypeScript + Vite; `acryl-datahub` SDK and the `mcp` Python SDK; pytest 
 
 ## User journey
 
-The complete execution journey is reproducible locally. The public hosted console exposes the
-current live context and readiness but intentionally disables anonymous mutations.
+The complete execution journey is reproducible locally and in the hosted judge console. Hosted
+mutations are limited to the fixed disposable scenario and protected by one-time confirmations,
+single-flight execution, cooldown, and sliding-window limits.
 
 1. A governance operator selects a source asset and records a rights change. The demo revokes
    **training** and **retrieval** on a partner review feed and retains **analytics** — which
@@ -228,9 +234,11 @@ current live context and readiness but intentionally disables anonymous mutation
 
 **Judges can test it three ways, none of which cost anything.**
 
-*Read-only against the public deployment.* `GET /api/health` and `GET /api/readiness` on
-<https://license.datahub-hackathon.aaronmathias.com> report the application's state, and the
-judge console is served at `/`. Nothing there requires credentials.
+*Interactively against the public deployment.* Open
+<https://license.datahub-hackathon.aaronmathias.com>, attempt execution to see the approval gate
+refuse, approve the exact plan, execute, verify the artifact probes, and write the verified
+outcomes back to DataHub. The console obtains the required one-time confirmations automatically;
+nothing requires credentials.
 
 *Locally, with no catalog, no credentials, and no network,* which is the reproducible path:
 

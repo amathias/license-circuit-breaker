@@ -21,6 +21,7 @@ export interface Readiness {
   namespace: Record<string, string>
   simulated: boolean
   mutations_enabled: boolean
+  mutation_mode: 'trusted' | 'guarded' | 'disabled'
 }
 
 export interface RightsEventEnvelope {

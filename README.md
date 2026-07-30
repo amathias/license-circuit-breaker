@@ -28,8 +28,9 @@ disable every downstream use. This closes that gap and proves it closed.
 
 ![License Circuit Breaker console showing verified probes and DataHub writeback](docs/assets/judge-console.png)
 
-_Local executable workflow evidence: downstream artifacts were probed directly and 8/8 DataHub
-status writes were verified by reread. The anonymous hosted console is intentionally read-only._
+_Executable workflow evidence: downstream artifacts are probed directly and 8/8 DataHub status
+writes are verified by reread. The hosted console exposes the same workflow through bounded,
+one-time mutation confirmations._
 
 ## Architecture
 
@@ -131,10 +132,13 @@ so verification fails on over-reach as well as under-reach.
 
 ### The refusals are the product
 
-- In execution-enabled local or trusted live mode, `POST /api/execute` answers **409** with the
+- In every execution-enabled mode, `POST /api/execute` answers **409** with the
   reason unless a recorded approval covers that exact plan. The local console keeps Execute
   enabled so the refusal can be observed.
-- The anonymous hosted console is intentionally read-only; mutation endpoints answer **403**.
+- In the hosted judge environment, approval, execution, writeback, and artifact reset each require
+  a fresh operation-bound confirmation. They are single-flight, cooldown-controlled, and
+  rate-limited. Public reset preserves the audit trail and invalidates the prior approval.
+- Public resume, governance-history deletion, and HTTP fault injection remain unavailable.
 - A contained endpoint answers **451 Unavailable For Legal Reasons**, not 404 or 500. A
   judge watching the network tab can tell containment from an outage.
 - `GET /api/readiness` answers **503** when degraded, with the full check list in the body.
@@ -158,8 +162,9 @@ and every receipt produced by the quickstart above, is stamped `simulated: true`
 
 The public deployment was separately verified against a live DataHub 1.6 instance: strong
 readiness covered 12 active entities and 9 lineage edges, and a reversible catalog writeback was
-confirmed by reread and restored. Durable per-artifact revocation writeback remains
-offline-verified only.
+confirmed by reread and restored. The guarded hosted workflow lets judges exercise the fixed
+containment scenario without credentials while keeping every mutation inside the `license.`
+allocation.
 
 ---
 

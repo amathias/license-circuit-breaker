@@ -1,5 +1,23 @@
 # Coordinator Handoff: License Circuit Breaker
 
+## 2026-07-30 guarded public workflow — verified deployment candidate
+
+| Field | Verified value |
+|---|---|
+| Scope | License Circuit Breaker application, judge console, tests, and public documentation only; no port, namespace, shared DataHub model, Caddy, or topology change |
+| Hosted behavior | `APP_ENV=hackathon` enables the fixed approve → fresh execute → verify → writeback → artifact-reset path through short-lived, one-use, client- and operation-bound confirmations |
+| Abuse controls | Process-local single-flight mutation, one-second cooldown, per-client and global 10-minute sliding windows, and bounded pending confirmations; the console honors `Retry-After` once |
+| Preserved denials | `production` remains read-only; HTTP fault injection remains removed; public run resume, arbitrary targets, seed, catalog reset/restore, and governance-history deletion remain unavailable |
+| Reset semantics | Public reset rebuilds only the disposable estate, retains plans/approvals/runs/steps, and appends a rejection that invalidates the prior exact-plan approval |
+| Writeback boundary | Existing namespace checks still constrain every outcome to `license.*`; hosted evidence references use a logical URI rather than a server filesystem path |
+| Readiness contract | `mutations_enabled=true` and `mutation_mode=guarded` in `hackathon`; `mutation_mode=disabled` in `production`; trusted local modes report `mutation_mode=trusted` |
+| Verification | 731 tests passed, including clean archive install and installed offline slice; focused guard/API/console suite passed; Ruff check passed; TypeScript typecheck and production Vite build passed; `git diff --check` passed |
+| Deployment status | Candidate is locally verified but not yet promoted. Deploy only after the exact pushed revision passes both GitHub Actions jobs. |
+| Rollback | Redeploy the previously verified read-only revision `27be7866ff4de6c294122b6ed187c8a8b4825bbf`; no schema or infrastructure rollback is required |
+
+ADR-031 records why the public hackathon environment is guarded rather than read-only and why
+the same mechanism is not represented as production authentication.
+
 ## 2026-07-29 anonymous mutation hardening — deployed and verified
 
 | Field | Verified value |

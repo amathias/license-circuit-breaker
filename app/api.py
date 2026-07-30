@@ -25,9 +25,10 @@ the graph, and a per-request fake would forget it.
 from __future__ import annotations
 
 import threading
-from typing import Any
+from collections.abc import AsyncIterator, Callable
+from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Body, HTTPException
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from adapters.containment import AdapterContext, AdapterRegistry
@@ -35,6 +36,11 @@ from adapters.datahub import DataHubClient, DataHubError
 from app.approvals import APPROVED, REJECTED, ApprovalError, ApprovalStore, require_approval
 from app.clients import build_client, is_offline
 from app.config import Settings, get_settings
+from app.demo_guard import (
+    DemoCapacityError,
+    DemoConfirmationError,
+    DemoMutationGuard,
+)
 from app.evidence import EvidenceBundle, build_bundle
 from app.execution import (
     ExecutionError,
@@ -64,11 +70,14 @@ router = APIRouter(prefix="/api")
 #: HTTP status for a governed refusal. Distinct from 404 (absent) and 503
 #: (unhealthy) so a probe can tell "contained" from "broken".
 LEGALLY_UNAVAILABLE = 451
-PUBLIC_READ_ONLY_ENVIRONMENTS = frozenset({"hackathon", "production"})
+PUBLIC_GUARDED_ENVIRONMENTS = frozenset({"hackathon"})
+PUBLIC_READ_ONLY_ENVIRONMENTS = frozenset({"production"})
+DemoOperation = Literal["approve", "execute", "writeback", "reset"]
 
 _client_lock = threading.Lock()
 _client: DataHubClient | None = None
 _client_key: tuple[str, ...] | None = None
+_demo_guard = DemoMutationGuard()
 
 
 def _client_fingerprint(settings: Settings) -> tuple[str, ...]:
@@ -116,22 +125,55 @@ def _ledger(settings: Settings) -> ReceiptLedger:
     return ReceiptLedger(settings.ensure_state_dir())
 
 
-def _require_demo_mutations(settings: Settings) -> None:
-    """Keep the hosted judge surface read-only.
+def _request_client_key(request: Request) -> str:
+    return request.client.host if request.client else "unknown-client"
 
-    The workflow remains executable in documented local ``offline`` mode and in
-    coordinator-controlled ``live`` verification. The public deployment uses
-    ``APP_ENV=hackathon`` and must not expose approval, execution, writeback, or
-    reset operations to anonymous internet clients.
-    """
-    if settings.app_env.casefold() in PUBLIC_READ_ONLY_ENVIRONMENTS:
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "the public demo is read-only; run the approval and containment "
-                "workflow locally with APP_ENV=offline"
-            ),
-        )
+
+def _capacity_error(error: DemoCapacityError) -> HTTPException:
+    return HTTPException(
+        status_code=429,
+        detail="the public demo is busy; retry after the indicated delay",
+        headers={"Retry-After": str(error.retry_after_seconds)},
+    )
+
+
+def _guarded_mutation(
+    operation: DemoOperation,
+) -> Callable[..., AsyncIterator[None]]:
+    """Build a route dependency that runs before request-body validation."""
+
+    async def dependency(
+        request: Request,
+        confirmation: Annotated[
+            str | None,
+            Header(alias="X-Demo-Confirmation", max_length=128),
+        ] = None,
+    ) -> AsyncIterator[None]:
+        environment = get_settings().app_env.casefold()
+        if environment in PUBLIC_READ_ONLY_ENVIRONMENTS:
+            raise HTTPException(
+                status_code=403,
+                detail="mutations are disabled in the production environment",
+            )
+        try:
+            if environment in PUBLIC_GUARDED_ENVIRONMENTS:
+                _demo_guard.begin_public(
+                    _request_client_key(request),
+                    operation,
+                    confirmation or "",
+                )
+            else:
+                _demo_guard.begin_unrestricted()
+        except DemoConfirmationError as exc:
+            raise HTTPException(status_code=403, detail=str(exc)) from exc
+        except DemoCapacityError as exc:
+            raise _capacity_error(exc) from exc
+        try:
+            yield
+        finally:
+            _demo_guard.finish()
+
+    return dependency
 
 
 # --- rights event ------------------------------------------------------
@@ -329,12 +371,53 @@ def policy_rules() -> dict[str, Any]:
 # --- approval ----------------------------------------------------------
 
 
+class DemoConfirmationRequest(BaseModel):
+    """Name the one public operation a confirmation may authorize."""
+
+    model_config = ConfigDict(extra="forbid")
+    operation: DemoOperation
+
+
+class DemoConfirmationResponse(BaseModel):
+    confirmation: str
+    operation: DemoOperation
+    expires_in_seconds: int
+
+
+@router.post("/demo/confirmation", response_model=DemoConfirmationResponse)
+def issue_demo_confirmation(
+    payload: DemoConfirmationRequest,
+    request: Request,
+) -> DemoConfirmationResponse:
+    """Issue a short-lived, one-use confirmation for the anonymous demo."""
+    environment = get_settings().app_env.casefold()
+    if environment in PUBLIC_READ_ONLY_ENVIRONMENTS:
+        raise HTTPException(
+            status_code=403,
+            detail="mutations are disabled in the production environment",
+        )
+    try:
+        confirmation, ttl = _demo_guard.issue_confirmation(
+            _request_client_key(request),
+            payload.operation,
+        )
+    except DemoCapacityError as exc:
+        raise _capacity_error(exc) from exc
+    return DemoConfirmationResponse(
+        confirmation=confirmation,
+        operation=payload.operation,
+        expires_in_seconds=ttl,
+    )
+
+
 class ApprovalRequest(BaseModel):
     """A human decision about the current plan."""
 
-    approver: str = Field(min_length=1)
+    model_config = ConfigDict(extra="forbid")
+
+    approver: str = Field(min_length=1, max_length=120)
     decision: str = APPROVED
-    note: str = ""
+    note: str = Field(default="", max_length=500)
     #: Optional narrowing. Omit to approve the plan's full enforcement scope.
     scope: dict[str, list[str]] | None = None
 
@@ -354,7 +437,10 @@ def list_approvals() -> dict[str, Any]:
     }
 
 
-@router.post("/approvals")
+@router.post(
+    "/approvals",
+    dependencies=[Depends(_guarded_mutation("approve"))],
+)
 def record_approval(request: ApprovalRequest = Body(...)) -> dict[str, Any]:
     """Record a decision against the current plan.
 
@@ -363,7 +449,6 @@ def record_approval(request: ApprovalRequest = Body(...)) -> dict[str, Any]:
     scope nobody reviewed.
     """
     settings = get_settings()
-    _require_demo_mutations(settings)
     built = _build_plan(settings)
 
     if request.decision not in (APPROVED, REJECTED):
@@ -401,7 +486,10 @@ class ExecuteRequest(BaseModel):
     run_id: str | None = None
 
 
-@router.post("/execute")
+@router.post(
+    "/execute",
+    dependencies=[Depends(_guarded_mutation("execute"))],
+)
 def execute(request: ExecuteRequest = Body(default=ExecuteRequest())) -> dict[str, Any]:
     """Run the approved containment plan.
 
@@ -410,7 +498,17 @@ def execute(request: ExecuteRequest = Body(default=ExecuteRequest())) -> dict[st
     plan changed after review" need different responses from an operator.
     """
     settings = get_settings()
-    _require_demo_mutations(settings)
+    if (
+        settings.app_env.casefold() in PUBLIC_GUARDED_ENVIRONMENTS
+        and request.run_id is not None
+    ):
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "the public demo starts a fresh run; resuming an existing run "
+                "is available only in a trusted local environment"
+            ),
+        )
     built = _build_plan(settings)
     store = _store(settings)
 
@@ -504,7 +602,10 @@ def evidence(run_id: str | None = None) -> dict[str, Any]:
     return bundle.to_dict()
 
 
-@router.post("/writeback")
+@router.post(
+    "/writeback",
+    dependencies=[Depends(_guarded_mutation("writeback"))],
+)
 def writeback() -> dict[str, Any]:
     """Write the durable revocation outcome back to DataHub.
 
@@ -513,7 +614,6 @@ def writeback() -> dict[str, Any]:
     nothing behind it.
     """
     settings = get_settings()
-    _require_demo_mutations(settings)
     bundle, built = _bundle_for(settings)
 
     if bundle.execution is None:
@@ -526,6 +626,14 @@ def writeback() -> dict[str, Any]:
     evidence_dir = state_dir / "evidence" / bundle.execution.run_id
     json_path, _markdown = bundle.write(evidence_dir)
 
+    public_evidence_ref = (
+        f"license-circuit-breaker://evidence/{bundle.execution.run_id}"
+    )
+    evidence_ref = (
+        public_evidence_ref
+        if settings.app_env.casefold() in PUBLIC_GUARDED_ENVIRONMENTS
+        else str(json_path)
+    )
     receipts = record_containment_outcomes(
         get_client(settings),
         built,
@@ -533,7 +641,7 @@ def writeback() -> dict[str, Any]:
         verdict=bundle.verdict(),
         contained_urns=frozenset(bundle.contained_urns),
         residual_urns=frozenset(r.urn for r in bundle.residual()),
-        evidence_ref=str(json_path),
+        evidence_ref=evidence_ref,
         ledger=_ledger(settings),
         simulated=is_offline(settings),
     )
@@ -541,7 +649,7 @@ def writeback() -> dict[str, Any]:
     return {
         "verdict": bundle.verdict(),
         "simulated": is_offline(settings),
-        "evidence_path": str(json_path),
+        "evidence_path": evidence_ref,
         "verified": sum(1 for r in receipts if r.verified),
         "attempted": len(receipts),
         "receipts": [r.to_dict() for r in receipts],
@@ -617,12 +725,24 @@ class ResetRequest(BaseModel):
     clear_governance: bool = False
 
 
-@router.post("/demo/reset")
+@router.post(
+    "/demo/reset",
+    dependencies=[Depends(_guarded_mutation("reset"))],
+)
 def demo_reset(request: ResetRequest = Body(default=ResetRequest())) -> dict[str, Any]:
-    """Rebuild the local estate deterministically, restoring the exposed state."""
+    """Rebuild the disposable estate and preserve public governance history."""
     settings = get_settings()
-    _require_demo_mutations(settings)
+    public_guarded = settings.app_env.casefold() in PUBLIC_GUARDED_ENVIRONMENTS
+    if public_guarded and request.clear_governance:
+        raise HTTPException(
+            status_code=403,
+            detail=(
+                "the public demo may reset disposable artifacts but may not "
+                "delete approval or execution history"
+            ),
+        )
     paths = _paths(settings)
+    plan_to_invalidate = _build_plan(settings) if public_guarded else None
 
     reset_estate(paths)
     result = build_estate(paths)
@@ -635,12 +755,35 @@ def demo_reset(request: ResetRequest = Body(default=ResetRequest())) -> dict[str
                 connection.execute(f"DELETE FROM {table}")  # noqa: S608
         cleared = True
 
+    approval_invalidated = False
+    if public_guarded:
+        assert plan_to_invalidate is not None
+        ApprovalStore(_store(settings)).record(
+            plan_to_invalidate,
+            approver="public-demo-reset",
+            decision=REJECTED,
+            note=(
+                "Public demo reset restored the disposable estate and "
+                "invalidated the prior approval. Review and approve the exact "
+                "plan before executing again."
+            ),
+        )
+        approval_invalidated = True
+
     return {
         "rebuilt": True,
         "summary": result.describe(),
         "governance_cleared": cleared,
+        "approval_invalidated": approval_invalidated,
         "estate": estate_status(paths),
     }
 
 
-__all__ = ["LEGALLY_UNAVAILABLE", "demo_rights_event", "get_client", "router"]
+__all__ = [
+    "LEGALLY_UNAVAILABLE",
+    "PUBLIC_GUARDED_ENVIRONMENTS",
+    "PUBLIC_READ_ONLY_ENVIRONMENTS",
+    "demo_rights_event",
+    "get_client",
+    "router",
+]
