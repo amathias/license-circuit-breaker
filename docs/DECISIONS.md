@@ -1011,9 +1011,9 @@ move to shared atomic state; or if authenticated operators are introduced.
 
 ## Versions
 
-**No live DataHub evidence was captured in the project-development session.** Live verification
-belongs to the coordinator and is summarized in `COORDINATOR_HANDOFF.md`; repository examples
-remain simulated and contain no private deployment receipts or credentials.
+**No live DataHub evidence is included in repository-generated artifacts.** Local examples are
+simulated and labeled accordingly. Independent live verification of the deployed service is
+recorded in `COORDINATOR_HANDOFF.md`; private runtime receipts remain outside the repository.
 
 Pinned and installed locally: `acryl-datahub` 1.6.0.x (matching the coordinator's
 DataHub 1.6.0 stack), `mcp` 1.28.1, Python 3.13.2, ruff 0.16.0, pytest 8.x.
