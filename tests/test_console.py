@@ -19,6 +19,7 @@ from pathlib import Path
 import pytest
 from fastapi.testclient import TestClient
 
+from app import api as api_module
 from app.config import get_settings, reset_settings_cache
 from app.main import WEB_DIST, _interactive_docs_enabled, app
 from demo.estate import EstatePaths, build_estate
@@ -135,6 +136,23 @@ class TestApiContract:
             "decision",
         ):
             assert field in node, f"graph nodes lost the {field!r} field"
+
+    def test_graph_uses_batched_entity_context(self, client, monkeypatch):
+        datahub = api_module.get_client(get_settings(), refresh=True)
+        original_get_entity = datahub.get_entity
+        singleton_reads = []
+
+        def record_singleton_read(urn):
+            singleton_reads.append(urn)
+            return original_get_entity(urn)
+
+        monkeypatch.setattr(datahub, "get_entity", record_singleton_read)
+
+        response = client.get("/api/graph")
+
+        assert response.status_code == 200
+        assert response.json()["nodes"]
+        assert singleton_reads == [api_module.graph.SOURCE]
 
     def test_plan_response_carries_every_field_the_console_renders(self, client):
         body = client.get("/api/plan").json()

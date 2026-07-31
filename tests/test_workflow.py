@@ -333,6 +333,15 @@ class TestWritebackReceipts:
 
 
 class TestDescendantDiscovery:
+    def test_entity_context_is_read_in_one_batch(self, client):
+        client.batch_log.clear()
+
+        descendants, validations = discover_descendants(client, SOURCE, NS)
+
+        assert descendants
+        assert validations
+        assert client.batch_log == [len(validations)]
+
     def test_foreign_descendants_are_excluded_but_reported(self, client):
         client.add_entity(FOREIGN, tags=(NS.project_tag,))
         client.add_edge(SOURCE, FOREIGN)

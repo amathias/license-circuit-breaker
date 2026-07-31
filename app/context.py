@@ -169,16 +169,22 @@ def discover_descendants(
         if edge.downstream_urn not in targets and edge.downstream_urn != source_urn:
             targets.append(edge.downstream_urn)
 
+    # Fetch the descendant context in one MCP round trip. The live client opens a
+    # session per call, so singleton reads here made the public console wait on
+    # the same entities twice before it could render the plan.
+    entities = client.get_entities(targets)
+
     # Purposes for every node, so contamination can be evaluated along a path.
-    purposes_by_urn: dict[str, frozenset[Purpose]] = {}
-    for urn in targets:
-        purposes_by_urn[urn] = _parse_purposes(client.get_entity(urn))
+    purposes_by_urn = {
+        urn: _parse_purposes(entities.get(urn))
+        for urn in targets
+    }
 
     descendants: list[Descendant] = []
     validations: list[ContextValidation] = []
 
     for urn in targets:
-        entity = client.get_entity(urn)
+        entity = entities.get(urn)
         validation = validate_entity(entity, urn, namespace)
         validations.append(validation)
 

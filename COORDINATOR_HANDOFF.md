@@ -1,5 +1,20 @@
 # Coordinator Handoff: License Circuit Breaker
 
+## 2026-07-31 judge-console cold-load optimization
+
+| Field | Verified value |
+|---|---|
+| Scope | Read-only DataHub context loading and progressive console rendering only; no mutation, policy, namespace, port, or deployment-topology change |
+| Backend change | Descendant context and impact-graph metadata are fetched through one batched `get_entities` call per request instead of opening one MCP session per entity |
+| Console change | Health, rights event, graph, plan, probes, evidence, history, and readiness render as each request settles instead of waiting for the slowest request |
+| Safety behavior | DataHub failures remain fail-closed; the impact graph returns 503 rather than presenting incomplete context |
+| Regression coverage | Tests require batched workflow and graph reads and fail if the legacy singleton lookup path is used |
+| Verification | 749 fast tests passed; focused workflow/console suite passed 58 tests; Ruff, TypeScript typecheck, production Vite build, and `git diff --check` passed |
+| Deployment status | Pending exact-commit publication and coordinator promotion |
+
+This optimization preserves the existing fixed scenario, guarded execution controls, five
+escalations, two executable actions, and 8/8 DataHub writeback behavior.
+
 ## 2026-07-30 guarded public workflow — verified deployment candidate
 
 | Field | Verified value |

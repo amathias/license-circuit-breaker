@@ -286,9 +286,16 @@ def impact_graph() -> dict[str, Any]:
         ) from exc
 
     urns = [graph.SOURCE, *{e.downstream_urn for e in edges}]
+    try:
+        entities = client.get_entities(urns)
+    except DataHubError as exc:
+        raise HTTPException(
+            status_code=503, detail=f"could not read entity context: {exc}"
+        ) from exc
+
     nodes: list[dict[str, Any]] = []
     for urn in urns:
-        entity = client.get_entity(urn)
+        entity = entities.get(urn)
         decision = decisions.get(urn)
         nodes.append(
             {

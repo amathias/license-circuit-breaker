@@ -69,26 +69,19 @@ export default function App() {
 
   /** Re-read everything derived from server state. */
   const refresh = useCallback(async () => {
-    const [r, ev, g, p, a, es, e] = await Promise.allSettled([
-      api.readiness(),
-      api.rightsEvent(),
-      api.graph(),
-      api.plan(),
-      api.approvals(),
-      api.estate(),
-      api.evidence(),
+    await Promise.allSettled([
+      api.readiness().then(setReadiness),
+      api.rightsEvent().then(setRights),
+      api.graph().then(setGraph),
+      api.plan().then(setPlan),
+      api.approvals().then(setApprovals),
+      api.estate().then(setEstate),
+      api.evidence().then((value) => {
+        setEvidence(value)
+        setExecution(value.execution)
+        setVerification(value.verification)
+      }),
     ])
-    if (r.status === 'fulfilled') setReadiness(r.value)
-    if (ev.status === 'fulfilled') setRights(ev.value)
-    if (g.status === 'fulfilled') setGraph(g.value)
-    if (p.status === 'fulfilled') setPlan(p.value)
-    if (a.status === 'fulfilled') setApprovals(a.value)
-    if (es.status === 'fulfilled') setEstate(es.value)
-    if (e.status === 'fulfilled') {
-      setEvidence(e.value)
-      setExecution(e.value.execution)
-      setVerification(e.value.verification)
-    }
   }, [])
 
   const runProbes = useCallback(async () => {
