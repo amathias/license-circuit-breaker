@@ -515,9 +515,11 @@ class WarehouseAdapter:
 
     name = "warehouse"
 
-    #: Only these tables are derived. Rebuilding a *source* feed would be
-    #: meaningless, and purging one would destroy the input a rebuild needs.
-    DERIVED_TABLES = frozenset({"normalized", "review_sentiment"})
+    #: Rebuild is restricted to the deterministic derived chain. Purge also
+    #: permits the broken-lineage legacy snapshot because it is a disposable
+    #: downstream copy, not an input used by any rebuild.
+    REBUILDABLE_TABLES = frozenset({"normalized", "review_sentiment"})
+    PURGEABLE_TABLES = REBUILDABLE_TABLES | {"legacy_snapshot"}
 
     def supports(self, record: ArtifactRecord, action: Action) -> bool:
         return record.kind == DUCKDB_TABLE and action in (Action.REBUILD, Action.PURGE)
@@ -527,11 +529,14 @@ class WarehouseAdapter:
         context.maybe_fail(self.name, urn, action)
         table = record.location
 
-        if table not in self.DERIVED_TABLES:
+        allowed_tables = (
+            self.PURGEABLE_TABLES if action is Action.PURGE else self.REBUILDABLE_TABLES
+        )
+        if table not in allowed_tables:
             raise ContainmentError(
-                f"cannot {action.value} {urn}: {table!r} is not a derived table. "
-                "Rebuilding or purging a source feed would destroy the input a "
-                "rebuild depends on."
+                f"cannot {action.value} {urn}: {table!r} is not an approved "
+                f"{action.value} target. Source feeds and retained analytics are "
+                "inputs, not disposable containment targets."
             )
 
         context.guard_path(context.paths.warehouse, action.value)

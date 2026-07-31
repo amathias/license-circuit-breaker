@@ -297,12 +297,21 @@ class TestWarehouse:
         _run(registry, context, graph.NORMALIZED, Action.PURGE)
         assert _run(registry, context, graph.NORMALIZED, Action.PURGE).changed is False
 
+    def test_broken_lineage_snapshot_is_a_purgeable_disposable_copy(
+        self, registry, context, paths
+    ):
+        receipt = _run(registry, context, graph.ORPHAN, Action.PURGE)
+        assert receipt.succeeded is True
+        assert receipt.evidence["rows_removed"] == 6
+        assert read_table(paths, "legacy_snapshot") == []
+
     def test_source_feeds_cannot_be_rebuilt_or_purged(self, registry, context, paths):
         # Purging the partner feed would destroy the input a rebuild depends on
         # and would make the demo unrepeatable.
-        receipt = registry.execute(context, graph.SOURCE, Action.PURGE)
-        assert receipt.succeeded is False
-        assert "not a derived table" in receipt.error
+        for action in (Action.PURGE, Action.REBUILD):
+            receipt = registry.execute(context, graph.SOURCE, action)
+            assert receipt.succeeded is False
+            assert "not an approved" in receipt.error
         assert len(table_row_ids(paths, "partner_feed")) == 24
 
     def test_declines_actions_outside_its_family(self):
