@@ -8,7 +8,7 @@ repository and the deployment can actually show.
 - **Public repository:** <https://github.com/amathias/license-circuit-breaker>
 - **License:** Apache 2.0, at the repository root
 - **Primary category:** Production ML Agents
-- **Demo video:** <https://youtu.be/42FznbyhYlA> (2:18, public, English captions)
+- **Demo video:** <https://youtu.be/kDOZsckifQw> (2:25, public, English captions)
 
 > License Circuit Breaker supports compliance operations. It does not provide legal advice,
 > does not interpret contract text, and makes no determination about whether any legal or

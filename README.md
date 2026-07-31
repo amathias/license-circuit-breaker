@@ -17,10 +17,10 @@ own receipts; and writes the outcome back to DataHub.
 
 [Open the live judge console](https://license.datahub-hackathon.aaronmathias.com) ·
 [View the source](https://github.com/amathias/license-circuit-breaker) ·
-[Watch the public demo](https://youtu.be/42FznbyhYlA) ·
+[Watch the public demo](https://youtu.be/kDOZsckifQw) ·
 [Follow the under-three-minute recording runbook](docs/DEMO_RECORDING.md)
 
-Demo video: **[public on YouTube](https://youtu.be/42FznbyhYlA)** (2:18, English captions).
+Demo video: **[public on YouTube](https://youtu.be/kDOZsckifQw)** (2:25, English captions).
 
 Catalogs and governance tools can display provenance or warn that a license is
 incompatible. The operational gap begins after the warning: somebody still has to find and

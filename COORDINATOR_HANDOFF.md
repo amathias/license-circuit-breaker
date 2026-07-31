@@ -118,7 +118,7 @@ live EC2 host from this project chat.
 | DataHub writeback | **Verified live on `eb81588`** by the coordinator. Seed writes were already confirmed on `c0574cd` (12/12 allowlisted `dataset` URNs active, no foreign ML URNs); the closeout added a guarded reversible slice writeback recorded `started=true`, `verified=true`, `restored=true`, `residual_risk=false`, and a matched reset/restore pair. Gate 4 closed. Durable revocation writeback (`POST /api/writeback`) was not part of the closeout sequence and remains unexercised live. |
 | Blockers | None outstanding. Live gates ran on the coordinator's AWS/SSM session; this chat has never held one. All four defects were diagnosed and fixed from artifacts the coordinator supplied — the DataHub registry, the installed `mcp` signature, then the captured payloads — never from a live run by this session, and the closeout evidence below is likewise the coordinator's, recorded here rather than reproduced here |
 | Evidence produced | 727 tests, 90.69% coverage, `examples/` (simulated), `docs/MILESTONE_B.md`, `docs/DECISIONS.md` (29 ADRs). Live closeout evidence is the coordinator's and is recorded below, not committed |
-| Submission assets | `SUBMISSION.md` and `docs/DEMO_RECORDING.md` complete — see "Submission assets" below. The public 2:18 demo is <https://youtu.be/42FznbyhYlA> and has published English captions. Docs-only; no redeployment required |
+| Submission assets | `SUBMISSION.md` and `docs/DEMO_RECORDING.md` complete — see "Submission assets" below. The public 2:25 demo is <https://youtu.be/kDOZsckifQw> and has published English captions. Docs-only; no redeployment required |
 
 ### Deployment note: the console is a build step, not a checked-in asset
 
@@ -575,7 +575,7 @@ example, or receipt was touched.
 | `docs/DEMO_RECORDING.md` | Recording runbook of record: pre-record gate, a 2:40 sequence under the three-minute cap, stop conditions, and the post-record publication checklist |
 | `DEMO_AND_SUBMISSION.md` | Retained as narrative background; now points at the two files above as authoritative |
 | `README.md` | Now names the public app URL and links both files |
-| Demo video | **Public:** <https://youtu.be/42FznbyhYlA> (2:18, published English captions) |
+| Demo video | **Public:** <https://youtu.be/kDOZsckifQw> (2:25, published English captions) |
 
 Two points the coordinator owns rather than this chat:
 
