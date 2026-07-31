@@ -10,7 +10,9 @@
 | Safety behavior | DataHub failures remain fail-closed; the impact graph returns 503 rather than presenting incomplete context |
 | Regression coverage | Tests require batched workflow and graph reads and fail if the legacy singleton lookup path is used |
 | Verification | 749 fast tests passed; focused workflow/console suite passed 58 tests; Ruff, TypeScript typecheck, production Vite build, and `git diff --check` passed |
-| Deployment status | Pending exact-commit publication and coordinator promotion |
+| Deployment status | Product commit `40f94e2e82e7ec0e80c58de8df9054649e0dd558` passed GitHub Actions run `30656333169`, was promoted through the single-project script, and passed public API plus browser acceptance |
+| Public endpoint timing | Sequential graph improved from 11.28 s to 3.68 s and plan from 7.16 s to 2.03 s; in a clean browser load, independent sections appeared at 1.22 s and every `Loading` placeholder was gone at 8.73 s rather than the reviewed 35.7 s |
+| Live preserved behavior | Readiness remained `ready`; the plan remained 8 decisions, 5 escalations, and 2 executable steps; execution without a one-time confirmation returned 403 |
 
 This optimization preserves the existing fixed scenario, guarded execution controls, five
 escalations, two executable actions, and 8/8 DataHub writeback behavior.
