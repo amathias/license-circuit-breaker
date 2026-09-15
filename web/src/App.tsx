@@ -17,7 +17,7 @@
  * the page is given nothing to disagree with.
  */
 
-import { useCallback, useEffect, useState } from 'react'
+import { useCallback, useEffect, useRef, useState } from 'react'
 import { ApiError, api, shortUrn } from './api'
 import { LineageGraph } from './LineageGraph'
 import type {
@@ -39,6 +39,7 @@ const PROBE_QUERY = 'battery charge'
 
 type Busy =
   | null
+  | 'refresh'
   | 'probe'
   | 'approve'
   | 'execute'
@@ -66,26 +67,36 @@ export default function App() {
   const [busy, setBusy] = useState<Busy>(null)
   const [error, setError] = useState<string | null>(null)
   const [gateRefusal, setGateRefusal] = useState<string | null>(null)
+  const refreshGeneration = useRef(0)
 
   /** Re-read everything derived from server state. */
   const refresh = useCallback(async () => {
-    await Promise.allSettled([
-      api.readiness().then(setReadiness),
-      api.rightsEvent().then(setRights),
-      api.graph().then(setGraph),
-      api.plan().then(setPlan),
-      api.approvals().then(setApprovals),
-      api.estate().then(setEstate),
-      api.evidence().then((value) => {
-        setEvidence(value)
-        setExecution(value.execution)
-        setVerification(value.verification)
-      }),
+    const generation = ++refreshGeneration.current
+    const [ready, event, impact, currentPlan, decisions, artifacts, report] = await Promise.all([
+      api.readiness(), api.rightsEvent(), api.graph(), api.plan(),
+      api.approvals(), api.estate(), api.evidence(),
     ])
+    if (generation !== refreshGeneration.current) return
+    if (currentPlan.plan_hash !== decisions.plan_hash || currentPlan.plan_hash !== report.plan.plan_hash) {
+      setPlan(null)
+      setApprovals(null)
+      setEvidence(null)
+      setExecution(null)
+      setWriteback(null)
+      throw new Error('The plan changed while loading. Refresh to review its current state.')
+    }
+    setReadiness(ready)
+    setRights(event)
+    setGraph(impact)
+    setPlan(currentPlan)
+    setApprovals(decisions)
+    setEstate(artifacts)
+    setEvidence(report)
+    setExecution(report.execution)
+    setVerification(report.verification)
   }, [])
 
   const runProbes = useCallback(async () => {
-    setBusy('probe')
     const results: ProbeOutcome[] = []
 
     try {
@@ -155,11 +166,11 @@ export default function App() {
     }
 
     setProbes(results)
-    setBusy(null)
   }, [])
 
   useEffect(() => {
-    void refresh().then(runProbes)
+    setBusy('probe')
+    void refresh().then(runProbes).catch((exc) => setError(String(exc))).finally(() => setBusy(null))
   }, [refresh, runProbes])
 
   async function guarded(state: Busy, action: () => Promise<void>) {
@@ -168,6 +179,10 @@ export default function App() {
     try {
       await action()
     } catch (exc) {
+      setPlan(null)
+      setApprovals(null)
+      setExecution(null)
+      setWriteback(null)
       setError(exc instanceof ApiError ? `${exc.message} — ${exc.reason}` : String(exc))
     } finally {
       setBusy(null)
@@ -177,13 +192,18 @@ export default function App() {
   const doApprove = (decision: 'approved' | 'rejected') =>
     guarded('approve', async () => {
       setGateRefusal(null)
+      if (!plan) throw new Error('Load and review the plan before approving.')
       await api.approve(
+        plan.plan_hash,
         approver,
         note,
         decision,
         readiness?.mutation_mode === 'guarded',
       )
-      setApprovals(await api.approvals())
+      setExecution(null)
+      setWriteback(null)
+      setVerification(null)
+      await refresh()
     })
 
   const doExecute = () =>
@@ -231,7 +251,7 @@ export default function App() {
   const doReset = () =>
     guarded('reset', async () => {
       const guardedPublicDemo = readiness?.mutation_mode === 'guarded'
-      await api.reset(!guardedPublicDemo, guardedPublicDemo)
+      await api.reset(false, guardedPublicDemo)
       setExecution(null)
       setVerification(null)
       setWriteback(null)
@@ -240,11 +260,11 @@ export default function App() {
       await runProbes()
     })
 
-  const approval = approvals?.current ?? null
+  const approval = approvals?.current?.plan_hash === plan?.plan_hash ? approvals?.current : null
   const approved = approval?.decision === 'approved'
   const verdict = evidence?.verdict ?? 'not_started'
   const selectedNode = graph?.nodes.find((n) => n.urn === selected) ?? null
-  const mutationsEnabled = readiness?.mutations_enabled ?? false
+  const mutationsEnabled = (readiness?.mutations_enabled ?? false) && plan !== null
   const publicGuarded = readiness?.mutation_mode === 'guarded'
 
   return (
@@ -259,6 +279,9 @@ export default function App() {
           </p>
         </div>
         <div className="status-row">
+          <button onClick={() => guarded('refresh', refresh)} disabled={busy !== null}>
+            Refresh
+          </button>
           {readiness ? (
             <span className={`pill ${readiness.status === 'ready' ? 'ok' : 'warn'}`}>
               {readiness.status === 'ready' ? 'ready' : 'degraded (503)'}
@@ -619,13 +642,13 @@ export default function App() {
           <button
             className="primary"
             onClick={() => doApprove('approved')}
-            disabled={busy !== null || !approver.trim() || !mutationsEnabled}
+            disabled={busy !== null || !plan || !approver.trim() || !mutationsEnabled}
           >
             {busy === 'approve' ? <span className="spin" /> : 'Approve this exact plan'}
           </button>
           <button
             onClick={() => doApprove('rejected')}
-            disabled={busy !== null || !approver.trim() || !mutationsEnabled}
+            disabled={busy !== null || !plan || !approver.trim() || !mutationsEnabled}
           >
             Reject
           </button>
@@ -633,7 +656,7 @@ export default function App() {
 
         {approvals && approvals.history.length > 1 ? (
           <p className="muted" style={{ marginTop: 10, marginBottom: 0 }}>
-            {approvals.history.length} decisions recorded. Approvals are append-only; a change of
+            {approvals.history.length} decisions recorded across this event's plans. Approvals are append-only; a change of
             mind is a new decision, never an edit.
           </p>
         ) : null}
@@ -722,7 +745,7 @@ export default function App() {
       {/* --- 7. verification -------------------------------------------- */}
       <Stage
         index={7}
-        done={verification?.contained === true}
+        done={verification?.checks_passed === true}
         title="Verification and residual exposure"
         subtitle={verification ? verification.summary : 'not verified'}
       >
@@ -802,7 +825,9 @@ export default function App() {
           </>
         ) : evidence && evidence.execution ? (
           <p className="muted" style={{ marginTop: 12, marginBottom: 0 }}>
-            No residual exposure. Every probed artifact was confirmed contained.
+            {evidence.verdict === 'contained'
+              ? 'Every required check passed. No residual exposure was found.'
+              : 'Containment has not been established. Review the verification results.'}
           </p>
         ) : null}
       </Stage>

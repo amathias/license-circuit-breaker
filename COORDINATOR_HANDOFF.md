@@ -1,5 +1,40 @@
 # Coordinator Handoff: License Circuit Breaker
 
+## 2026-09-15 independent review remediation — verified repository milestone
+
+Claude's review of `1a97ca8` was reproduced and used to harden approval identity,
+resume, metadata validation, evidence, execution dependencies, discovery, and the
+console. [Finding-by-finding remediation](docs/REVIEW_REMEDIATION.md) records the
+changes, tests, upgrade requirements, and remaining limits; ADR-032 through ADR-034
+record the architectural decisions.
+
+- **Scope:** verified post-deadline repository hardening, approved for publication to
+  `origin/main`. Deployment, shared catalog migration, and live ledger repair remain pending.
+- **Deployment candidate:** none proposed until the coordinator verifies live PATCH
+  compatibility, existing evidence integrity, and the replacement-grant migration.
+- **Compatibility:** schema v2 adds run fingerprints. Old runs cannot resume without
+  fingerprints; old approvals no longer match the expanded plan identity. Rebuild
+  disposable artifacts to add manifest byte hashes, then review a fresh plan.
+- **Live migration:** replacement metadata now needs a structured, independently
+  valid grant. Existing live entities may escalate until a coordinated scoped update.
+- **Writeback:** custom properties use SDK PATCH proposals, tested against the installed
+  SDK offline. Live acceptance is pending. Tags and properties are still separate writes;
+  tag replacement retains a concurrent-writer risk.
+- **Integrity limits:** receipt and estate locks protect cooperating local processes;
+  there is no external ledger anchor. Preserve and inspect any existing corrupt ledger.
+  No claim is made about the current hosted chain or proxy identity configuration.
+- **Dependencies:** `uv.lock` is the reproducible runtime/dev set. Isolated builds use
+  setuptools 83.0.0; the DataHub SDK still requires runtime setuptools below 82.
+- **Validation:** final full fast run passed 798 tests at 90.62% coverage with the
+  unchanged 85% gate. Both clean-install tests passed. New regressions cover concurrent
+  schema initialization, dotenv/documentation parity, and historical snapshots after reset.
+- **Offline walkthrough:** unapproved enforcement exited 8; approved enforcement exited
+  9 with the expected escalation and 8/8 passing probes; receipt verification exited 0.
+  Ruff, TypeScript, production Vite build, frozen-lock check, and `pip check` passed.
+
+The previously recorded deployment entries below describe their historical revisions.
+This repository milestone does not change the hosted deployment.
+
 ## 2026-07-31 judge-console cold-load optimization
 
 | Field | Verified value |

@@ -92,7 +92,11 @@ class TestPlanHash:
         first = build_impact_plan(client, _event(), NS)
         second = build_impact_plan(client, _event(), NS)
         assert first.plan_hash() == second.plan_hash()
-        assert first.generated_at != second.generated_at
+        from dataclasses import replace
+        from datetime import timedelta
+
+        later = replace(second, generated_at=second.generated_at + timedelta(days=1))
+        assert first.plan_hash() == later.plan_hash()
 
     def test_a_different_rights_event_yields_a_different_hash(self, client, plan):
         other = build_impact_plan(client, _event(reason="a different reason entirely"), NS)

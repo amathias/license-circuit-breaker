@@ -43,7 +43,7 @@ from adapters.catalog import EntitySpec, build_entity_proposals, domain_urn
 from adapters.datahub import DataHubClient, EntityContext
 from adapters.entity_registry import entity_type_of
 from app.namespace import Namespace, NamespaceViolation, assert_scoped_reset, require_in_namespace
-from demo.graph import EDGES, FIXTURE_MARKER, NODES, SENTINEL_URN, all_urns
+from demo.graph import EDGES, FIXTURE_MARKER, NODES, REPLACEMENT_SOURCE, SENTINEL_URN, all_urns
 
 
 class SeedError(Exception):
@@ -201,6 +201,12 @@ def build_specs(namespace: Namespace) -> list[EntitySpec]:
                     "criticality": node.criticality.value,
                     "rebuildable": str(node.rebuildable_from_replacement).lower(),
                     "fixture_marker": FIXTURE_MARKER,
+                    **({
+                        "rights_state": "approved",
+                        "rights_version": "1",
+                        "permitted_purposes": "analytics,export,retrieval,serving,training",
+                        "rights_evidence": "operator-supplied: approved demo corpus grant v1",
+                    } if node.urn == REPLACEMENT_SOURCE else {}),
                 },
                 tags=(FIXTURE_MARKER, namespace.project_tag),
                 domain_urn=domain,
@@ -372,7 +378,7 @@ def verify_seed(
         if not entity.has_tag(namespace.project_tag):
             problems.append(f"{urn}: missing project tag {namespace.project_tag!r}")
             continue
-        missing_props = entity.missing_properties()
+        missing_props = entity.missing_properties(allow_empty_purposes=urn == SENTINEL_URN)
         if missing_props:
             problems.append(f"{urn}: missing custom properties {sorted(missing_props)}")
             continue

@@ -61,15 +61,21 @@ Requires Python 3.12+. Node 20+ is optional — it builds the console, and the A
 CLI run without it.
 
 ```bash
-python -m venv .venv
-.venv/Scripts/python.exe -m pip install -e ".[dev]"     # Windows
-# .venv/bin/python -m pip install -e ".[dev]"           # macOS / Linux
+python -m pip install uv==0.12.14
+uv sync --frozen --extra dev
 
 cp .env.example .env
 ```
 
 Set `APP_ENV=offline` in `.env`. That selects the deterministic in-memory DataHub
 substitute, so the entire demo runs with no catalog, no credentials, and no network.
+The initial dependency installation needs network access. Activate `.venv` before
+the commands below, or prefix them with `uv run --no-sync`.
+
+Unset `APP_ENV` now defaults to read-only `production`. Supported values are `local`,
+`development`, `test`, `offline`, `live`, `hackathon`, and `production`; unknown values
+fail startup. See [review remediation and upgrade notes](docs/REVIEW_REMEDIATION.md)
+for approval invalidation, legacy run handling, and remaining security limits.
 
 ### The demo, in four commands
 
@@ -94,7 +100,7 @@ read the output than produce it.
 ### The judge console
 
 ```bash
-npm --prefix web install
+npm --prefix web ci
 npm --prefix web run build          # writes web/dist
 python -m app.main                  # http://127.0.0.1:8102
 ```

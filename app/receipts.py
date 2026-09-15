@@ -11,8 +11,9 @@ Two properties matter:
   runs on every value before it is written, not at the call sites, so a new caller
   cannot forget.
 - **Append-only.** The file is opened in append mode and entries carry a sequence
-  number and the prior entry's hash, so a silently truncated or reordered ledger is
-  detectable. This is tamper-evident, not tamper-proof, and is described that way.
+  number and the prior entry's hash. Edits, gaps, and reordering are detectable.
+  Tail deletion or complete rewriting cannot be detected without an independently
+  stored trusted tip. This local chain has no external anchor.
 """
 
 from __future__ import annotations
@@ -24,6 +25,8 @@ from collections.abc import Iterator
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
+
+from app.locking import file_lock
 
 REDACTED = "[REDACTED]"
 
@@ -99,6 +102,16 @@ class ReceiptLedger:
                 This flag is what keeps simulated runs from being mistaken for
                 live DataHub evidence; it is never inferred, always explicit.
         """
+        with file_lock(self._path.with_suffix(".lock")):
+            return self._append_locked(
+                operation=operation, urn=urn, succeeded=succeeded, simulated=simulated,
+                detail=detail, payload=payload,
+            )
+
+    def _append_locked(self, *, operation, urn, succeeded, simulated, detail, payload):
+        valid, detail_check = self._verify_chain_locked()
+        if not valid:
+            raise ValueError(f"Receipt ledger integrity failed: {detail_check}")
         previous = self._last_entry()
         entry = {
             "seq": (previous["seq"] + 1) if previous else 1,
@@ -107,7 +120,7 @@ class ReceiptLedger:
             "urn": urn,
             "succeeded": succeeded,
             "simulated": simulated,
-            "detail": detail,
+            "detail": sanitize(detail),
             "payload": sanitize(payload or {}),
             "prior_hash": previous["entry_hash"] if previous else None,
         }
@@ -131,9 +144,16 @@ class ReceiptLedger:
         """Check that the hash chain and sequence numbers are intact.
 
         Returns ``(ok, detail)``. Detects truncation from the front, reordering,
-        and edited entries. It cannot detect an attacker who rewrites the whole
-        file, which is why this is described as tamper-evident.
+        and edited entries. Tail deletion and complete rewriting require an
+        external trusted anchor to detect; this ledger has no such anchor.
         """
+        with file_lock(self._path.with_suffix(".lock")):
+            try:
+                return self._verify_chain_locked()
+            except (ValueError, KeyError, TypeError, AttributeError) as exc:
+                return False, f"unreadable ledger entry: {type(exc).__name__}"
+
+    def _verify_chain_locked(self) -> tuple[bool, str]:
         expected_seq = 1
         prior_hash: str | None = None
 

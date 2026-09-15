@@ -36,7 +36,15 @@ from adapters.containment import (
     NoAdapterError,
     execution_stage,
 )
-from app.approvals import Approval, ScopeViolation, require_scope
+from app.approvals import (
+    Approval,
+    ApprovalError,
+    ApprovalStore,
+    ScopeViolation,
+    require_approval,
+    require_scope,
+)
+from app.locking import file_lock
 from app.receipts import ReceiptLedger
 from app.rights import DESTRUCTIVE_ACTIONS, Action, ArtifactClass
 from app.store import GovernanceStore
@@ -174,12 +182,41 @@ class ExecutionJournal:
     def __init__(self, store: GovernanceStore) -> None:
         self._store = store
 
-    def start(self, run_id: str, plan_hash: str, approval_id: str) -> None:
+    def start(
+        self, run_id: str, plan_hash: str, approval_id: str,
+        estate_fingerprint: str | None = None,
+    ) -> None:
+        with self._store.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            existing = connection.execute(
+                "SELECT * FROM runs WHERE run_id = ?", (run_id,)
+            ).fetchone()
+            if existing is not None:
+                if existing["plan_hash"] != plan_hash:
+                    raise ExecutionError("Resume refused: run belongs to another plan")
+                if existing["approval_id"] != approval_id:
+                    raise ExecutionError("Resume refused: run belongs to another approval")
+                if (
+                    estate_fingerprint is not None
+                    and existing["estate_fingerprint"] != estate_fingerprint
+                ):
+                    raise ExecutionError(
+                        "Resume refused: estate changed or has no recorded fingerprint. "
+                        "Review current state and start a fresh run."
+                    )
+            connection.execute(
+                "INSERT OR IGNORE INTO runs "
+                "(run_id, plan_hash, approval_id, status, started_at, estate_fingerprint) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (run_id, plan_hash, approval_id, RUN_RUNNING, datetime.now(UTC).isoformat(),
+                 estate_fingerprint),
+            )
+
+    def checkpoint(self, run_id: str, fingerprint: str) -> None:
         with self._store.connect() as connection:
             connection.execute(
-                "INSERT OR IGNORE INTO runs (run_id, plan_hash, approval_id, status, started_at) "
-                "VALUES (?, ?, ?, ?, ?)",
-                (run_id, plan_hash, approval_id, RUN_RUNNING, datetime.now(UTC).isoformat()),
+                "UPDATE runs SET estate_fingerprint = ? WHERE run_id = ?",
+                (fingerprint, run_id),
             )
 
     def finish(self, run_id: str) -> None:
@@ -306,6 +343,23 @@ def execute_plan(
     run_id: str | None = None,
     ledger: ReceiptLedger | None = None,
 ) -> ExecutionReport:
+    """Serialize execution with estate build/reset across local processes."""
+    with file_lock(context.paths.root.parent / "estate.lock"):
+        return _execute_plan(
+            plan, approval, context, store, registry=registry, run_id=run_id, ledger=ledger,
+        )
+
+
+def _execute_plan(
+    plan: ImpactPlan,
+    approval: Approval,
+    context: AdapterContext,
+    store: GovernanceStore,
+    *,
+    registry: AdapterRegistry | None = None,
+    run_id: str | None = None,
+    ledger: ReceiptLedger | None = None,
+) -> ExecutionReport:
     """Execute an approved plan, journalling as it goes.
 
     Passing an existing ``run_id`` resumes that run: steps already recorded as
@@ -328,10 +382,24 @@ def execute_plan(
         raise ExecutionError(
             f"Execution refused: approval {approval.approval_id} is a {approval.decision}."
         )
+    try:
+        current_approval = require_approval(ApprovalStore(store), plan)
+    except ApprovalError as exc:
+        raise ExecutionError(f"Execution refused: {exc}") from exc
+    if current_approval != approval:
+        raise ExecutionError(
+            "Execution refused: approval is no longer the current recorded decision"
+        )
+    if ledger is not None:
+        valid, detail = ledger.verify_chain()
+        if not valid:
+            raise ExecutionError(f"Execution refused: evidence ledger integrity failed: {detail}")
 
     run_id = run_id or f"run-{uuid.uuid4().hex[:12]}"
     started_at = datetime.now(UTC)
-    journal.start(run_id, plan.plan_hash(), approval.approval_id)
+    from demo.estate import estate_fingerprint
+
+    journal.start(run_id, plan.plan_hash(), approval.approval_id, estate_fingerprint(context.paths))
 
     already_done = journal.completed_steps(run_id)
     steps = plan_steps(plan)
@@ -340,6 +408,9 @@ def execute_plan(
     for step in steps:
         if step.seq in already_done:
             row = already_done[step.seq]
+            if row["urn"] != step.urn or row["action"] != step.action.value:
+                raise ExecutionError("Resume refused: completed step does not match the plan")
+            require_scope(approval, step.urn, step.action)
             outcomes.append(
                 StepOutcome(
                     step=step,
@@ -352,8 +423,28 @@ def execute_plan(
             )
             continue
 
-        outcome = _run_step(registry, context, approval, step)
+        failed_dependencies = []
+        if step.action in {Action.REBUILD, Action.RETRAIN, Action.REPLACE}:
+            decision = plan.decision_for(step.urn)
+            ancestors = {hop for path in decision.paths for hop in path.hops[1:-1]}
+            failed_dependencies = [
+                prior for prior in outcomes
+                if not prior.succeeded
+                and (prior.step.urn == step.urn or prior.step.urn in ancestors)
+            ]
+        if failed_dependencies:
+            outcome = StepOutcome(
+                step=step, status=FAILED, changed=False,
+                detail="Not attempted: a required containment step did not succeed",
+                error="dependency failed: " + ", ".join(
+                    f"{item.step.urn}/{item.step.action.value}" for item in failed_dependencies
+                ),
+                evidence={"attempted": False},
+            )
+        else:
+            outcome = _run_step(registry, context, approval, step)
         journal.record(run_id, outcome)
+        journal.checkpoint(run_id, estate_fingerprint(context.paths))
         _log(ledger, run_id, outcome)
         outcomes.append(outcome)
 

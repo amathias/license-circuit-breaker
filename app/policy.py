@@ -11,8 +11,10 @@ record, but it cannot decide enforcement.
 
 from __future__ import annotations
 
+import hashlib
+import json
 from collections.abc import Mapping
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from functools import lru_cache
 from pathlib import Path
 from typing import Any
@@ -21,6 +23,7 @@ import yaml
 
 from app.rights import (
     Action,
+    ArtifactClass,
     Criticality,
     Descendant,
     Exposure,
@@ -86,6 +89,10 @@ class PolicyTable:
     def rule_ids(self) -> tuple[str, ...]:
         return tuple(r.id for r in self.rules)
 
+    def content_hash(self) -> str:
+        encoded = json.dumps(asdict(self), sort_keys=True, separators=(",", ":"))
+        return hashlib.sha256(encoded.encode()).hexdigest()
+
 
 def load_policy(path: Path | str = DEFAULT_RULES_PATH) -> PolicyTable:
     """Parse and validate the rule table.
@@ -99,7 +106,24 @@ def load_policy(path: Path | str = DEFAULT_RULES_PATH) -> PolicyTable:
         raise PolicyError(f"Rule table at {path} is missing a top-level 'rules' key")
 
     rules: list[Rule] = []
+    if not isinstance(raw["rules"], list) or not raw["rules"]:
+        raise PolicyError("rules must be a nonempty list")
     for entry in raw["rules"]:
+        if not isinstance(entry, dict):
+            raise PolicyError("each rule must be a mapping")
+        conditions = entry.get("when", {})
+        if not isinstance(conditions, dict):
+            raise PolicyError("rule when must be a mapping")
+        for key, expected in conditions.items():
+            if key == "artifact_class":
+                if (not isinstance(expected, list) or not expected
+                        or any(item not in {a.value for a in ArtifactClass} for item in expected)):
+                    raise PolicyError("artifact_class must be a nonempty list of known classes")
+            elif key not in {
+                "lineage_complete", "has_paths", "affected", "has_replacement", "rebuildable",
+                "context_complete",
+            } or type(expected) is not bool:
+                raise PolicyError(f"unknown or invalid condition {key!r}")
         try:
             actions = tuple(Action(a) for a in entry["then"]["actions"])
         except ValueError as exc:
@@ -128,6 +152,8 @@ def load_policy(path: Path | str = DEFAULT_RULES_PATH) -> PolicyTable:
         # Ties would make evaluation order depend on file ordering, which is a
         # silent source of non-determinism.
         raise PolicyError("Duplicate precedence values make rule evaluation ambiguous")
+    if not any(not rule.when and Action.ESCALATE in rule.actions for rule in rules):
+        raise PolicyError("Policy requires an unconditional escalation backstop")
 
     priority_raw = raw.get("priority", {})
     priority = PriorityModel(
@@ -211,6 +237,7 @@ def evaluate(
         "has_replacement": event.has_replacement,
         "rebuildable": descendant.rebuildable_from_replacement,
         "artifact_class": descendant.artifact_class.value,
+        "context_complete": not descendant.missing_evidence,
     }
 
     for rule in table.rules:
@@ -228,7 +255,7 @@ def evaluate(
             rationale=rule.description or rule.id,
             paths=descendant.paths,
             priority=priority,
-            missing_evidence=rule.missing_evidence,
+            missing_evidence=(*rule.missing_evidence, *descendant.missing_evidence),
             requires_approval=rule.requires_approval,
         )
 

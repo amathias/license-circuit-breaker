@@ -17,7 +17,7 @@
 #   rebuildable        bool  -- this artifact can be rebuilt from that replacement
 #   artifact_class     list  -- artifact classes this rule applies to
 
-version: 1
+version: 2
 
 rules:
   # --- Fail-closed rules. Precedence 10-19. -------------------------------
@@ -59,6 +59,14 @@ rules:
       actions: [escalate]
       missing_evidence:
         - "Artifact class could not be determined from DataHub metadata"
+
+  - id: LCB-R004
+    description: Governance or purpose evidence is missing; impact cannot be safely determined.
+    precedence: 13
+    when:
+      context_complete: false
+    then:
+      actions: [escalate]
 
   # --- Not affected. Precedence 20-29. -----------------------------------
   - id: LCB-R010

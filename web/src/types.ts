@@ -171,6 +171,8 @@ export interface Probe {
 }
 
 export interface Verification {
+  checks_passed: boolean
+  coverage_complete: boolean
   verified_at: string
   contained: boolean
   summary: string
@@ -199,6 +201,7 @@ export interface WritebackResult {
 }
 
 export interface Evidence {
+  plan: Plan
   verdict: Verdict
   simulated: boolean
   generated_at: string

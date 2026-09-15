@@ -24,6 +24,7 @@ was actually seen rather than a bare pass or fail.
 
 from __future__ import annotations
 
+import hashlib
 from dataclasses import dataclass
 from datetime import UTC, datetime
 from typing import Any
@@ -44,6 +45,7 @@ from demo.estate import (
     EstatePaths,
     active_version,
     index_manifest,
+    load_index,
     read_table,
     table_row_ids,
     training_manifest,
@@ -89,6 +91,7 @@ class VerificationReport:
 
     verified_at: datetime
     probes: tuple[Probe, ...]
+    coverage_complete: bool = True
 
     @property
     def containment_probes(self) -> tuple[Probe, ...]:
@@ -104,15 +107,20 @@ class VerificationReport:
 
     @property
     def contained(self) -> bool:
-        """True only when every probe passed.
+        """True only when coverage is complete and every probe passed.
 
         Includes the precision probes: a run that broke the unaffected branch
         has not achieved containment, it has achieved damage.
         """
+        return self.coverage_complete and self.checks_passed
+
+    @property
+    def checks_passed(self) -> bool:
+        """Passing observed probes is distinct from complete impact coverage."""
         return bool(self.probes) and not self.failures
 
     def residual(self) -> tuple[ResidualExposure, ...]:
-        """Failed containment probes, as residual exposure."""
+        """Both exposure and damage to unaffected artifacts need action."""
         return tuple(
             ResidualExposure(
                 urn=probe.urn,
@@ -121,7 +129,6 @@ class VerificationReport:
                 action=None,
             )
             for probe in self.failures
-            if probe.containment
         )
 
     def describe(self) -> str:
@@ -136,6 +143,8 @@ class VerificationReport:
         return {
             "verified_at": self.verified_at.isoformat(),
             "contained": self.contained,
+            "checks_passed": self.checks_passed,
+            "coverage_complete": self.coverage_complete,
             "summary": self.describe(),
             "probes": [p.to_dict() for p in self.probes],
             "residual_exposure": [r.to_dict() for r in self.residual()],
@@ -187,6 +196,16 @@ def probe_index(paths: EstatePaths, urn: str) -> Probe:
     manifest = index_manifest(paths)
     rows = [str(r) for r in manifest.get("row_ids", ())]
     partner = sorted(r for r in rows if r.startswith(PARTNER_PREFIX))
+    _vectorizer, stored = load_index(paths)
+    stored_ids = sorted(str(row["review_id"]) for row in stored)
+    partner.extend(row for row in stored_ids if row.startswith(PARTNER_PREFIX))
+    integrity = stored_ids == sorted(rows)
+    if paths.index_vectors.exists():
+        integrity = integrity and manifest.get("artifact_hash") == hashlib.sha256(
+            paths.index_vectors.read_bytes()
+        ).hexdigest()
+    else:
+        integrity = integrity and manifest.get("purged") is True
 
     # A live retrieval as well as a manifest read: a manifest can be rewritten
     # without the vectors changing, and the search surface is what a user hits.
@@ -200,12 +219,13 @@ def probe_index(paths: EstatePaths, urn: str) -> Probe:
     return Probe(
         urn=urn,
         method=INDEX_SCAN,
-        passed=not leaked,
+        passed=not leaked and integrity,
         expected="no indexed document traces to the revoked partner feed",
         observed=(
             f"{len(rows)} documents indexed, none from the partner feed"
-            if not leaked
+            if not leaked and integrity
             else f"{len(leaked)} partner-derived documents still retrievable: {leaked[:5]}"
+            if integrity else "Stored index content does not match its manifest"
         ),
     )
 
@@ -252,7 +272,12 @@ def probe_model(paths: EstatePaths, urn: str) -> Probe:
     sources = list(manifest.get("training_sources", ()))
     tainted = [s for s in sources if s in (graph.SOURCE, graph.NORMALIZED, graph.FEATURES)]
 
-    passed = not partner and not tainted
+    version = active_version(paths, name)
+    model_path = paths.model_root(name) / str(version) / "model.json"
+    integrity = model_path.is_file() and manifest.get("artifact_hash") == hashlib.sha256(
+        model_path.read_bytes()
+    ).hexdigest()
+    passed = not partner and not tainted and integrity
     return Probe(
         urn=urn,
         method=MODEL_MANIFEST,
@@ -263,6 +288,7 @@ def probe_model(paths: EstatePaths, urn: str) -> Probe:
             f"from {sources}"
             if passed
             else (
+                f"artifact integrity {'verified' if integrity else 'FAILED'}; "
                 f"serving {active_version(paths, name)} trained on "
                 f"{len(partner)} partner rows from {sources}"
             )
@@ -323,7 +349,7 @@ def probe_availability(paths: EstatePaths, urn: str) -> Probe:
 
     if record.kind == MODEL:
         manifest = training_manifest(paths, record.location)
-        available = bool(manifest) and active_version(paths, record.location) is not None
+        available = bool(manifest) and probe_model(paths, urn).passed
         observed = (
             f"serving {active_version(paths, record.location)} from "
             f"{manifest.get('training_sources', [])}"
@@ -373,27 +399,48 @@ def verify_plan(plan: ImpactPlan, paths: EstatePaths) -> VerificationReport:
 
     for decision in plan.decisions:
         record = ARTIFACTS_BY_URN.get(decision.descendant_urn)
-        if record is None:
-            continue
-
         if decision.is_escalation:
             continue
+        if record is None:
+            probes.append(Probe(
+                urn=decision.descendant_urn, method="unavailable", passed=False,
+                expected="a supported probe verifies this artifact",
+                observed="no local artifact verifier exists", containment=decision.is_destructive,
+            ))
+            continue
 
-        if decision.is_destructive:
-            probe = _CONTAINMENT_PROBES.get(record.kind)
-            if probe is not None:
-                probes.append(probe(paths, decision.descendant_urn))
-        elif Action.NO_ACTION in decision.actions:
-            probes.append(probe_availability(paths, decision.descendant_urn))
+        try:
+            if decision.is_destructive:
+                probe = _CONTAINMENT_PROBES.get(record.kind)
+                if probe is not None:
+                    probes.append(probe(paths, decision.descendant_urn))
+            elif Action.NO_ACTION in decision.actions:
+                probes.append(probe_availability(paths, decision.descendant_urn))
+        except (OSError, ValueError, TypeError, KeyError, EstateError) as exc:
+            probes.append(Probe(
+                urn=decision.descendant_urn, method="artifact_read", passed=False,
+                expected="readable artifact evidence", observed=f"verification failed: {exc}",
+                containment=decision.is_destructive,
+            ))
 
     # The approved branch never appears in the impact plan at all, which is
     # exactly why it is worth probing: nothing in the pipeline would notice if
     # containment had reached it.
     if graph.APPROVED_MODEL not in {p.urn for p in probes}:
-        probes.append(probe_availability(paths, graph.APPROVED_MODEL))
+        try:
+            probes.append(probe_availability(paths, graph.APPROVED_MODEL))
+        except (OSError, ValueError, TypeError, KeyError, EstateError) as exc:
+            probes.append(Probe(
+                urn=graph.APPROVED_MODEL, method=AVAILABILITY, passed=False,
+                expected="the unaffected model is still available",
+                observed=f"verification failed: {exc}", containment=False,
+            ))
 
     probes.sort(key=lambda p: (not p.containment, p.urn))
-    return VerificationReport(verified_at=datetime.now(UTC), probes=tuple(probes))
+    return VerificationReport(
+        verified_at=datetime.now(UTC), probes=tuple(probes),
+        coverage_complete=not plan.escalations,
+    )
 
 
 def probe_for(artifact_class: ArtifactClass) -> str:

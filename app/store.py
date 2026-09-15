@@ -23,7 +23,7 @@ from contextlib import contextmanager
 from pathlib import Path
 
 #: Bumped when the schema changes incompatibly.
-SCHEMA_VERSION = 1
+SCHEMA_VERSION = 2
 
 _SCHEMA = """
 CREATE TABLE IF NOT EXISTS rights_events (
@@ -113,6 +113,10 @@ class GovernanceStore:
     def _initialize(self) -> None:
         with self.connect() as connection:
             connection.executescript(_SCHEMA)
+            connection.execute("BEGIN IMMEDIATE")
+            columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+            if "estate_fingerprint" not in columns:
+                connection.execute("ALTER TABLE runs ADD COLUMN estate_fingerprint TEXT")
             connection.execute(
                 "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)",
                 (str(SCHEMA_VERSION),),

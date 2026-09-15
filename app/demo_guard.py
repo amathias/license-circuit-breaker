@@ -51,6 +51,7 @@ class DemoMutationGuard:
         self._confirmations: dict[str, _Confirmation] = {}
         self._by_client: dict[str, deque[float]] = defaultdict(deque)
         self._global: deque[float] = deque()
+        self._reads: deque[float] = deque()
         self._active = False
         self._last_finished_at: float | None = None
 
@@ -91,6 +92,7 @@ class DemoMutationGuard:
         *,
         ttl_seconds: int = 120,
         pending_limit: int = 20,
+        global_pending_limit: int = 200,
     ) -> tuple[str, int]:
         """Issue one short-lived confirmation for one client and operation."""
         now = self._clock()
@@ -100,7 +102,7 @@ class DemoMutationGuard:
                 confirmation.client_key == client_key
                 for confirmation in self._confirmations.values()
             )
-            if pending >= pending_limit:
+            if pending >= pending_limit or len(self._confirmations) >= global_pending_limit:
                 raise DemoCapacityError(ttl_seconds)
             token = self._token_factory(32)
             self._confirmations[token] = _Confirmation(
@@ -125,12 +127,13 @@ class DemoMutationGuard:
         now = self._clock()
         with self._lock:
             self._prune_confirmations(now)
-            confirmation = self._confirmations.pop(token, None)
+            confirmation = self._confirmations.get(token)
             if (
                 confirmation is None
                 or confirmation.client_key != client_key
                 or confirmation.operation != operation
             ):
+                self._confirmations.pop(token, None)
                 raise DemoConfirmationError(
                     "a fresh, operation-bound demo confirmation is required"
                 )
@@ -161,6 +164,7 @@ class DemoMutationGuard:
                     )
                 )
 
+            self._confirmations.pop(token, None)
             client_samples.append(now)
             self._global.append(now)
             self._active = True
@@ -171,6 +175,17 @@ class DemoMutationGuard:
             if self._active:
                 raise DemoCapacityError(1)
             self._active = True
+
+    def consume_read(self, *, limit: int = 120, window_seconds: int = 60) -> None:
+        """Bound expensive catalog planning across anonymous callers in this worker."""
+        with self._lock:
+            now = self._clock()
+            self._prune(self._reads, now=now, window_seconds=window_seconds)
+            if len(self._reads) >= limit:
+                raise DemoCapacityError(self._retry_after(
+                    self._reads, now=now, window_seconds=window_seconds,
+                ))
+            self._reads.append(now)
 
     def finish(self) -> None:
         """Release the single mutation slot."""
@@ -185,5 +200,6 @@ class DemoMutationGuard:
             self._confirmations.clear()
             self._by_client.clear()
             self._global.clear()
+            self._reads.clear()
             self._active = False
             self._last_finished_at = None

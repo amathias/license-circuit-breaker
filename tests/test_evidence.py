@@ -123,7 +123,7 @@ class TestVerdict:
         # Every step succeeded and every probe passed. The broken-lineage
         # snapshot is still unresolved, so this is not an all-clear.
         assert not execution.failed
-        assert verification.contained is True
+        assert verification.checks_passed is True
         assert bundle.verdict() == "escalated"
 
     def test_a_failed_action_yields_residual(self, plan, paths, tmp_path):

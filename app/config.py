@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from functools import lru_cache
 from pathlib import Path
+from typing import Literal
 
 from pydantic import Field, field_validator
 from pydantic_settings import BaseSettings, SettingsConfigDict
@@ -39,7 +40,9 @@ class Settings(BaseSettings):
     )
 
     project_slug: str = Field(default=PROJECT_SLUG, alias="PROJECT_SLUG")
-    app_env: str = Field(default="local", alias="APP_ENV")
+    app_env: Literal[
+        "local", "development", "test", "offline", "live", "hackathon", "production"
+    ] = Field(default="production", alias="APP_ENV")
     app_host: str = Field(default="127.0.0.1", alias="APP_HOST")
     app_port: int = Field(default=INTERNAL_PORT, alias="APP_PORT")
     app_public_url: str = Field(default="", alias="APP_PUBLIC_URL")
@@ -56,6 +59,11 @@ class Settings(BaseSettings):
     demo_fixture_root: Path = Field(
         default=Path("demo/fixtures/license-circuit-breaker"), alias="DEMO_FIXTURE_ROOT"
     )
+
+    @field_validator("app_env", mode="before")
+    @classmethod
+    def _normalize_environment(cls, value: str) -> str:
+        return value.strip().casefold() if isinstance(value, str) else value
 
     @field_validator("datahub_urn_prefix")
     @classmethod

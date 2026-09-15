@@ -70,7 +70,9 @@ class TestSeedMaterializesFullEntries:
 
     def test_entities_carry_required_properties(self, client):
         for urn in all_urns():
-            assert not client.get_entity(urn).missing_properties()
+            assert not client.get_entity(urn).missing_properties(
+                allow_empty_purposes=urn == SENTINEL_URN
+            )
 
     def test_entities_carry_a_domain(self, client):
         for urn in all_urns():

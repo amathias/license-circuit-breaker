@@ -23,12 +23,17 @@ from __future__ import annotations
 import csv
 import hashlib
 import json
+import os
 import shutil
+import tempfile
+import uuid
 from dataclasses import dataclass, field
 from datetime import UTC, datetime
 from pathlib import Path
 from typing import Any
 
+from app.locking import file_lock
+from app.namespace import require_path_within
 from demo import graph
 from demo.corpus import (
     APPROVED_REVIEWS,
@@ -218,7 +223,7 @@ class ServingControl:
     def save(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         payload = {"estate_version": ESTATE_VERSION, "services": self.states}
-        self.path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+        _write_json(self.path, payload)
 
     def state(self, urn: str) -> str:
         return str(self.states.get(urn, {}).get("state", SERVING))
@@ -433,6 +438,8 @@ def build_index(paths: EstatePaths, source_urn: str, source_feed: str) -> int:
     """
     table = "normalized"
     rows = read_table(paths, table)
+    if any(row.get("source_feed") != source_feed for row in rows):
+        raise EstateError("Index input provenance does not match the declared source feed")
     documents = [str(row["text"]) for row in rows]
     model = fit_tfidf(documents)
 
@@ -461,6 +468,7 @@ def build_index(paths: EstatePaths, source_urn: str, source_feed: str) -> int:
             "vocabulary_size": len(model.vocabulary),
             "row_ids": row_ids,
             "content_hash": _hash(row_ids),
+            "artifact_hash": hashlib.sha256(paths.index_vectors.read_bytes()).hexdigest(),
         },
     )
     return len(entries)
@@ -553,6 +561,7 @@ def train_model(
         "row_ids": row_ids,
         "training_accuracy": round(accuracy, 4),
         "content_hash": _hash(row_ids),
+        "artifact_hash": hashlib.sha256((version_dir / "model.json").read_bytes()).hexdigest(),
     }
     _write_json(version_dir / "training_manifest.json", manifest)
     if activate:
@@ -660,6 +669,11 @@ def quarantined_export_path(paths: EstatePaths) -> Path:
 
 
 def build_estate(paths: EstatePaths) -> EstateBuildResult:
+    with file_lock(paths.root.parent / "estate.lock"):
+        return _build_estate(paths)
+
+
+def _build_estate(paths: EstatePaths) -> EstateBuildResult:
     """Build every local artifact deterministically.
 
     Safe to re-run: each step replaces its output from the same fixed corpus, so
@@ -689,6 +703,7 @@ def build_estate(paths: EstatePaths) -> EstateBuildResult:
         paths.registry_path,
         {
             "estate_version": ESTATE_VERSION,
+            "generation": uuid.uuid4().hex,
             "built_at": datetime.now(UTC).isoformat(),
             "artifacts": [a.to_dict() for a in LOCAL_ARTIFACTS],
         },
@@ -726,6 +741,11 @@ def _train_approved_model(paths: EstatePaths) -> None:
 
 
 def reset_estate(paths: EstatePaths) -> bool:
+    with file_lock(paths.root.parent / "estate.lock"):
+        return _reset_estate(paths)
+
+
+def _reset_estate(paths: EstatePaths) -> bool:
     """Delete the whole estate directory. Returns True when something was removed.
 
     Scoped to ``APP_STATE_DIR/estate`` by construction -- it removes the estate
@@ -782,7 +802,19 @@ def estate_status(paths: EstatePaths) -> dict[str, Any]:
 
 def _write_json(path: Path, payload: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(payload, indent=2, sort_keys=True), encoding="utf-8")
+    temporary = None
+    try:
+        with tempfile.NamedTemporaryFile(
+            mode="w", encoding="utf-8", dir=path.parent, suffix=".tmp", delete=False,
+        ) as handle:
+            temporary = Path(handle.name)
+            json.dump(payload, handle, indent=2, sort_keys=True)
+            handle.flush()
+            os.fsync(handle.fileno())
+        os.replace(temporary, path)
+    finally:
+        if temporary is not None:
+            temporary.unlink(missing_ok=True)
 
 
 def _hash(values: list[str]) -> str:
@@ -828,3 +860,18 @@ __all__ = [
     "train_model",
     "training_manifest",
 ]
+
+
+def estate_fingerprint(paths: EstatePaths) -> str:
+    """Fingerprint actual disposable artifacts, including the build generation.
+
+    A resume may reuse receipts only while this exact state still exists.
+    This is a local drift check, not a tamper-proof external attestation.
+    """
+    digest = hashlib.sha256()
+    for path in sorted(paths.root.rglob("*")):
+        if path.is_file():
+            require_path_within(path, paths.root, "fingerprint")
+            digest.update(path.relative_to(paths.root).as_posix().encode())
+            digest.update(hashlib.sha256(path.read_bytes()).digest())
+    return digest.hexdigest()

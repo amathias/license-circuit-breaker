@@ -151,7 +151,7 @@ class TestAfterContainment:
     def test_every_probe_passes(self, plan, paths, tmp_path):
         _contain(plan, paths, GovernanceStore(tmp_path))
         report = verify_plan(plan, paths)
-        assert report.contained is True, [p.observed for p in report.failures]
+        assert report.checks_passed is True, [p.observed for p in report.failures]
 
     def test_both_containment_and_precision_probes_run(self, plan, paths, tmp_path):
         _contain(plan, paths, GovernanceStore(tmp_path))
@@ -219,7 +219,7 @@ class TestDetectsSkippedContainment:
         # says every step succeeded; only a probe of the artifact itself can
         # notice, and that independence is the point of the whole module.
         _contain(plan, paths, GovernanceStore(tmp_path))
-        assert verify_plan(plan, paths).contained is True
+        assert verify_plan(plan, paths).checks_passed is True
 
         quarantined_export_path(paths).replace(export_path(paths))
         assert verify_plan(plan, paths).contained is False
@@ -277,7 +277,7 @@ class TestProbeReporting:
     def test_the_report_serializes(self, plan, paths, tmp_path):
         _contain(plan, paths, GovernanceStore(tmp_path))
         payload = verify_plan(plan, paths).to_dict()
-        assert payload["contained"] is True
+        assert payload["checks_passed"] is True
         assert len(payload["probes"]) == 8
         assert payload["residual_exposure"] == []
 

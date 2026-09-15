@@ -299,7 +299,7 @@ class TestResume:
 
         context.fault_injector = record_and_fail
         first = execute_plan(plan, approval, context, store)
-        assert len(first.failed) == 1
+        assert len(first.failed) == 2  # purge failed; its dependent rebuild was not attempted
 
         attempts.clear()
         context.fault_injector = lambda adapter, urn, action: attempts.append(
@@ -307,10 +307,9 @@ class TestResume:
         )
         second = execute_plan(plan, approval, context, store, run_id=first.run_id)
 
-        # Only the purge should have been attempted again; everything else was
-        # already journalled as complete.
-        assert attempts == [("vector-index", "purge")]
-        assert len(second.resumed) == len(second.outcomes) - 1
+        # Retry the failed purge and its blocked rebuild, preserving independent work.
+        assert attempts == [("vector-index", "purge"), ("vector-index", "rebuild")]
+        assert len(second.resumed) == len(second.outcomes) - 2
         assert not second.failed
 
     def test_resumed_steps_are_labelled_as_such(self, plan, approval, context, store):
@@ -337,7 +336,7 @@ class TestResume:
         completed = ExecutionJournal(reopened).completed_steps(first.run_id)
         assert len(completed) == len(first.outcomes)
 
-    def test_resume_after_a_scope_widening_approval_reruns_the_skipped_step(
+    def test_scope_widening_requires_a_fresh_run(
         self, plan, context, store, paths
     ):
         approvals = ApprovalStore(store)
@@ -348,7 +347,9 @@ class TestResume:
         assert export_path(paths).exists()
 
         full = approvals.record(plan, approver="b@example.com")
-        second = execute_plan(plan, full, context, store, run_id=first.run_id)
+        with pytest.raises(ExecutionError, match="approval"):
+            execute_plan(plan, full, context, store, run_id=first.run_id)
+        second = execute_plan(plan, full, context, store)
 
         assert not second.failed
         assert not export_path(paths).exists()

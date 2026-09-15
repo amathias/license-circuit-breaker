@@ -10,7 +10,6 @@ that writes would corrupt other projects' demos every time the proxy polled it.
 
 from __future__ import annotations
 
-import os
 import time
 from contextlib import asynccontextmanager
 from pathlib import Path
@@ -57,7 +56,7 @@ def _interactive_docs_enabled(app_env: str) -> bool:
     return app_env.casefold() in {"development", "local", "test"}
 
 
-_docs_enabled = _interactive_docs_enabled(os.getenv("APP_ENV", "local"))
+_docs_enabled = _interactive_docs_enabled(get_settings().app_env)
 
 app = FastAPI(
     title="License Circuit Breaker",

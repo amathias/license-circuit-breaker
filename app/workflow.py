@@ -31,7 +31,7 @@ from adapters.datahub import (
 )
 from app.context import ContextValidation, discover_descendants, validate_entity
 from app.namespace import Namespace, NamespaceViolation, require_in_namespace
-from app.policy import PolicyTable, evaluate_all
+from app.policy import PolicyTable, evaluate_all, get_policy
 from app.receipts import ReceiptLedger
 from app.rights import DESTRUCTIVE_ACTIONS, ImpactDecision, RightsEvent
 
@@ -51,6 +51,9 @@ class ImpactPlan:
     decisions: tuple[ImpactDecision, ...]
     validations: tuple[ContextValidation, ...]
     generated_at: datetime
+    policy_hash: str = ""
+    replacement_hash: str = ""
+    context_hash: str = ""
 
     @property
     def escalations(self) -> tuple[ImpactDecision, ...]:
@@ -76,8 +79,8 @@ class ImpactPlan:
     def plan_hash(self) -> str:
         """Stable fingerprint of exactly what this plan would enforce.
 
-        Covers the rights event's content plus every decision's target, actions,
-        rules, and priority -- and nothing else. ``generated_at`` is deliberately
+        Covers the rights event, policy, discovered facts, replacement grant,
+        validation and decisions. ``generated_at`` is deliberately
         excluded, so regenerating the same plan from the same graph produces the
         same hash and an existing approval still applies.
 
@@ -87,15 +90,27 @@ class ImpactPlan:
         """
         payload = {
             "event": self.event.content_hash(),
+            "policy": self.policy_hash,
+            "replacement": self.replacement_hash,
+            "context": self.context_hash,
             "decisions": [
                 {
                     "urn": decision.descendant_urn,
+                    "artifact_class": decision.artifact_class.value,
                     "actions": [a.value for a in decision.actions],
                     "rule_ids": list(decision.rule_ids),
                     "priority": decision.priority,
+                    "requires_approval": decision.requires_approval,
+                    "missing_evidence": sorted(decision.missing_evidence),
+                    "paths": sorted(
+                        (list(path.hops), path.complete) for path in decision.paths
+                    ),
                 }
                 for decision in self.decisions
             ],
+            "validation": sorted(
+                (v.urn, v.usable, sorted(v.issues)) for v in self.validations
+            ),
         }
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
@@ -120,6 +135,9 @@ class ImpactPlan:
             "generated_at": self.generated_at.isoformat(),
             "event": json.loads(self.event.model_dump_json()),
             "event_hash": self.event.content_hash(),
+            "policy_hash": self.policy_hash,
+            "replacement_hash": self.replacement_hash,
+            "context_hash": self.context_hash,
             "all_clear": self.all_clear,
             "requires_approval": self.requires_approval,
             "enforcement_scope": self.enforcement_scope(),
@@ -169,6 +187,11 @@ def build_impact_plan(
         WorkflowError: if the source entity cannot be read or is not ours.
     """
     require_in_namespace(event.source_urn, namespace, operation="build_impact_plan")
+    if event.effective_at > datetime.now(UTC):
+        raise WorkflowError("Rights change is not effective yet; enforcement is not authorized")
+    if event.prior.environments != {"PROD"} or event.new.environments != {"PROD"}:
+        raise WorkflowError("This demo evaluates PROD rights only; environment changes need review")
+    table = table or get_policy()
 
     try:
         source = client.get_entity(event.source_urn)
@@ -184,7 +207,42 @@ def build_impact_plan(
     descendants, validations = discover_descendants(
         client, event.source_urn, namespace, lost_purposes=event.lost_purposes
     )
+    replacement_hash = ""
+    if event.replacement_source_urn:
+        replacement = client.get_entity(event.replacement_source_urn)
+        validation = validate_entity(replacement, event.replacement_source_urn, namespace)
+        properties = replacement.custom_properties if replacement else {}
+        grant = {key: properties.get(key, "") for key in (
+            "rights_state", "rights_version", "permitted_purposes", "rights_evidence",
+        )}
+        replacement_hash = hashlib.sha256(
+            json.dumps({"grant": grant, "usable": validation.usable}, sort_keys=True).encode()
+        ).hexdigest()
+        allowed = {purpose.strip() for purpose in grant["permitted_purposes"].split(",")}
+        replacement_valid = (
+            validation.usable
+            and event.replacement_source_urn != event.source_urn
+            and event.replacement_source_urn not in {d.urn for d in descendants}
+            and grant["rights_state"] in {"approved", "restricted"}
+            and grant["rights_version"].isdigit() and int(grant["rights_version"]) > 0
+            and bool(grant["rights_evidence"].strip())
+            and event.lost_purposes <= allowed
+        )
+        if not replacement_valid:
+            descendants = [d.model_copy(update={
+                "missing_evidence": (*d.missing_evidence,
+                                     "replacement source lacks a valid independent rights grant"),
+            }) if d.rebuildable_from_replacement else d for d in descendants]
     decisions = evaluate_all(event, descendants, table)
+    facts = []
+    for descendant in sorted(descendants, key=lambda item: item.urn):
+        fact = json.loads(descendant.model_dump_json())
+        fact["current_purposes"] = sorted(fact["current_purposes"])
+        fact["owners"] = sorted(fact["owners"])
+        fact["missing_evidence"] = sorted(fact["missing_evidence"])
+        fact["paths"] = sorted(fact["paths"], key=lambda path: json.dumps(path, sort_keys=True))
+        facts.append(fact)
+    context_hash = hashlib.sha256(json.dumps(facts, sort_keys=True).encode()).hexdigest()
 
     if ledger is not None:
         ledger.append(
@@ -209,6 +267,9 @@ def build_impact_plan(
         decisions=tuple(decisions),
         validations=(source_validation, *validations),
         generated_at=datetime.now(UTC),
+        policy_hash=table.content_hash(),
+        replacement_hash=replacement_hash,
+        context_hash=context_hash,
     )
 
 

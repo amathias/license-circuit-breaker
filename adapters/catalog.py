@@ -247,11 +247,8 @@ class LiveCatalog:
     ) -> None:
         """Rewrite ``datasetProperties`` with a complete property set.
 
-        The aspect is replace-semantics in DataHub, so the caller must supply the
-        merged set. :meth:`adapters.datahub.LiveDataHubClient.set_properties`
-        does that merge, which is why this takes the final state rather than a
-        patch: one place decides what survives, and it is the one that just read
-        the entity.
+        Reserved for callers that own the complete aspect. Incremental outcome
+        writes use ``patch_custom_properties`` to preserve unrelated fields.
         """
         require_in_namespace(urn, self._namespace, operation="catalog-properties")
 
@@ -270,6 +267,15 @@ class LiveCatalog:
                 )
             ]
         )
+
+    def patch_custom_properties(self, urn: str, properties: dict[str, str]) -> None:
+        """Patch only supplied keys in primary storage using the pinned SDK."""
+        require_in_namespace(urn, self._namespace, operation="catalog-properties-patch")
+        from datahub.specific.dataset import DatasetPatchBuilder
+
+        builder = DatasetPatchBuilder(urn)
+        builder.add_custom_properties({str(key): str(value) for key, value in properties.items()})
+        self.emit(list(builder.build()))
 
     def set_status(self, urn: str, removed: bool) -> None:
         """Soft-delete or restore one entity.

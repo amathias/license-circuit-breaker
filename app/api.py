@@ -28,7 +28,7 @@ import threading
 from collections.abc import AsyncIterator, Callable
 from typing import Annotated, Any, Literal
 
-from fastapi import APIRouter, Body, Depends, Header, HTTPException, Request
+from fastapi import APIRouter, Body, Depends, Header, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, Field
 
 from adapters.containment import AdapterContext, AdapterRegistry
@@ -49,10 +49,10 @@ from app.execution import (
     load_report,
     plan_steps,
 )
+from app.locking import file_lock
 from app.namespace import NamespaceViolation
 from app.policy import get_policy
 from app.receipts import ReceiptLedger
-from app.rights import License, Purpose, RightsEvent, RightsState
 from app.store import GovernanceStore
 from app.verification import verify_plan
 from app.workflow import (
@@ -63,6 +63,7 @@ from app.workflow import (
 )
 from demo import graph
 from demo.estate import EstatePaths, build_estate, estate_status, reset_estate
+from demo.events import demo_rights_event
 from demo.serving import ServingRefused, fetch_export, predict, search
 
 router = APIRouter(prefix="/api")
@@ -122,7 +123,14 @@ def _store(settings: Settings) -> GovernanceStore:
 
 
 def _ledger(settings: Settings) -> ReceiptLedger:
-    return ReceiptLedger(settings.ensure_state_dir())
+    ledger = ReceiptLedger(settings.ensure_state_dir())
+    if ledger.path.exists():
+        valid, detail = ledger.verify_chain()
+        if not valid:
+            raise HTTPException(
+                status_code=503, detail=f"Evidence ledger integrity failed: {detail}"
+            )
+    return ledger
 
 
 def _request_client_key(request: Request) -> str:
@@ -179,39 +187,6 @@ def _guarded_mutation(
 # --- rights event ------------------------------------------------------
 
 
-def demo_rights_event() -> RightsEvent:
-    """The rights event the demo revokes.
-
-    Training and retrieval are removed; analytics is retained. Retaining one
-    purpose is what makes the unaffected branch provable rather than asserted.
-    """
-    from datetime import UTC, datetime
-
-    return RightsEvent(
-        event_id="evt-lcb-demo-001",
-        effective_at=datetime(2026, 8, 1, 9, 0, tzinfo=UTC),
-        source_urn=graph.SOURCE,
-        prior=License(
-            license_id="PARTNER-2026-01",
-            name="Partner review feed agreement",
-            permitted_purposes=frozenset(
-                {Purpose.TRAINING, Purpose.RETRIEVAL, Purpose.ANALYTICS}
-            ),
-            evidence_ref="operator-supplied: vendor notice 2026-08-01",
-        ),
-        new=License(
-            license_id="PARTNER-2026-01",
-            name="Partner review feed agreement",
-            permitted_purposes=frozenset({Purpose.ANALYTICS}),
-            state=RightsState.RESTRICTED,
-            evidence_ref="operator-supplied: vendor notice 2026-08-01",
-        ),
-        reason="Partner revoked training and retrieval rights effective immediately",
-        replacement_source_urn=graph.REPLACEMENT_SOURCE,
-        requester="governance@example.com",
-    )
-
-
 @router.get("/rights-event")
 def rights_event() -> dict[str, Any]:
     """The structured rights event, as recorded by the operator."""
@@ -234,13 +209,17 @@ def rights_event() -> dict[str, Any]:
 
 
 def _build_plan(settings: Settings) -> ImpactPlan:
+    if settings.app_env in PUBLIC_GUARDED_ENVIRONMENTS:
+        try:
+            _demo_guard.consume_read()
+        except DemoCapacityError as exc:
+            raise _capacity_error(exc) from exc
     client = get_client(settings)
     try:
         return build_impact_plan(
             client,
             demo_rights_event(),
             settings.namespace,
-            ledger=_ledger(settings),
             simulated=is_offline(settings),
         )
     except (WorkflowError, DataHubError) as exc:
@@ -256,7 +235,6 @@ def plan() -> dict[str, Any]:
     """The deterministic containment plan for the demo rights event."""
     settings = get_settings()
     built = _build_plan(settings)
-    ApprovalStore(_store(settings)).remember_plan(built)
 
     return {
         **built.to_dict(),
@@ -422,6 +400,7 @@ class ApprovalRequest(BaseModel):
 
     model_config = ConfigDict(extra="forbid")
 
+    plan_hash: str = Field(pattern=r"^[0-9a-f]{64}$")
     approver: str = Field(min_length=1, max_length=120)
     decision: str = APPROVED
     note: str = Field(default="", max_length=500)
@@ -456,25 +435,32 @@ def record_approval(request: ApprovalRequest = Body(...)) -> dict[str, Any]:
     scope nobody reviewed.
     """
     settings = get_settings()
-    built = _build_plan(settings)
+    with file_lock(settings.app_state_dir / "estate.lock"):
+        built = _build_plan(settings)
 
-    if request.decision not in (APPROVED, REJECTED):
-        raise HTTPException(
-            status_code=422, detail=f"unknown decision {request.decision!r}"
-        )
+        if request.plan_hash != built.plan_hash():
+            raise HTTPException(
+                status_code=409,
+                detail="The plan changed since it was displayed. Refresh and review it again.",
+            )
 
-    try:
-        approval = ApprovalStore(_store(settings)).record(
-            built,
-            approver=request.approver,
-            decision=request.decision,
-            note=request.note,
-            scope=request.scope,
-        )
-    except ApprovalError as exc:
-        raise HTTPException(status_code=422, detail=str(exc)) from exc
+        if request.decision not in (APPROVED, REJECTED):
+            raise HTTPException(
+                status_code=422, detail=f"unknown decision {request.decision!r}"
+            )
 
-    return {"approval": approval.to_dict(), "plan_hash": built.plan_hash()}
+        try:
+            approval = ApprovalStore(_store(settings)).record(
+                built,
+                approver=request.approver,
+                decision=request.decision,
+                note=request.note,
+                scope=request.scope,
+            )
+        except ApprovalError as exc:
+            raise HTTPException(status_code=422, detail=str(exc)) from exc
+
+        return {"approval": approval.to_dict(), "plan_hash": built.plan_hash()}
 
 
 # --- execution ---------------------------------------------------------
@@ -490,7 +476,7 @@ class ExecuteRequest(BaseModel):
     model_config = ConfigDict(extra="forbid")
 
     #: Resume an existing run instead of starting a new one.
-    run_id: str | None = None
+    run_id: str | None = Field(default=None, pattern=r"^run-[0-9a-f]{12}$")
 
 
 @router.post(
@@ -505,49 +491,58 @@ def execute(request: ExecuteRequest = Body(default=ExecuteRequest())) -> dict[st
     plan changed after review" need different responses from an operator.
     """
     settings = get_settings()
-    if (
-        settings.app_env.casefold() in PUBLIC_GUARDED_ENVIRONMENTS
-        and request.run_id is not None
-    ):
-        raise HTTPException(
-            status_code=403,
-            detail=(
-                "the public demo starts a fresh run; resuming an existing run "
-                "is available only in a trusted local environment"
-            ),
+    with file_lock(settings.app_state_dir / "estate.lock"):
+        if (
+            settings.app_env.casefold() in PUBLIC_GUARDED_ENVIRONMENTS
+            and request.run_id is not None
+        ):
+            raise HTTPException(
+                status_code=403,
+                detail=(
+                    "the public demo starts a fresh run; resuming an existing run "
+                    "is available only in a trusted local environment"
+                ),
+            )
+        built = _build_plan(settings)
+        store = _store(settings)
+
+        try:
+            approval = require_approval(ApprovalStore(store), built)
+        except ApprovalError as exc:
+            raise HTTPException(
+                status_code=409,
+                detail={"error": type(exc).__name__, "message": str(exc)},
+            ) from exc
+
+        context = AdapterContext(
+            paths=_paths(settings),
+            namespace=settings.namespace,
+            replacement_source_urn=built.event.replacement_source_urn,
+            actor=approval.approver,
         )
-    built = _build_plan(settings)
-    store = _store(settings)
 
-    try:
-        approval = require_approval(ApprovalStore(store), built)
-    except ApprovalError as exc:
-        raise HTTPException(
-            status_code=409,
-            detail={"error": type(exc).__name__, "message": str(exc)},
-        ) from exc
+        try:
+            report = execute_plan(
+                built,
+                approval,
+                context,
+                store,
+                registry=AdapterRegistry(),
+                run_id=request.run_id,
+                ledger=_ledger(settings),
+            )
+        except ExecutionError as exc:
+            raise HTTPException(status_code=409, detail=str(exc)) from exc
 
-    context = AdapterContext(
-        paths=_paths(settings),
-        namespace=settings.namespace,
-        replacement_source_urn=built.event.replacement_source_urn,
-        actor=approval.approver,
-    )
-
-    try:
-        report = execute_plan(
-            built,
-            approval,
-            context,
-            store,
-            registry=AdapterRegistry(),
-            run_id=request.run_id,
-            ledger=_ledger(settings),
+        snapshot = build_bundle(
+            built, approval=approval, execution=report,
+            verification=verify_plan(built, _paths(settings)),
+            estate=estate_status(_paths(settings)), simulated=is_offline(settings),
         )
-    except ExecutionError as exc:
-        raise HTTPException(status_code=409, detail=str(exc)) from exc
-
-    return {"execution": report.to_dict(), "approval_id": approval.approval_id}
+        snapshot.write(
+            settings.app_state_dir / "evidence" / report.run_id, stem="execution-snapshot",
+        )
+        return {"execution": report.to_dict(), "approval_id": approval.approval_id}
 
 
 @router.get("/runs")
@@ -568,19 +563,18 @@ def runs() -> dict[str, Any]:
 def verify() -> dict[str, Any]:
     """Probe every artifact and report what is actually observed now."""
     settings = get_settings()
-    built = _build_plan(settings)
-    return verify_plan(built, _paths(settings)).to_dict()
+    with file_lock(settings.app_state_dir / "estate.lock"):
+        built = _build_plan(settings)
+        return verify_plan(built, _paths(settings)).to_dict()
 
 
-def _bundle_for(
-    settings: Settings, run_id: str | None = None
-) -> tuple[EvidenceBundle, ImpactPlan]:
+def _bundle_for(settings: Settings) -> tuple[EvidenceBundle, ImpactPlan]:
     """Assemble the current evidence cycle from durable state only.
 
     A new decision starts a new cycle. Until that exact approval has a run, the
     default evidence view must not reuse an older execution or attach it to the
-    new decision. An explicit ``run_id`` remains a historical lookup and uses
-    the approval actually recorded on that run.
+    new decision. Historical requests use the stored execution-time snapshot.
+    The caller holds the estate lock while observing current artifacts.
     """
     built = _build_plan(settings)
     store = _store(settings)
@@ -591,14 +585,7 @@ def _bundle_for(
     execution = None
 
     target: str | None = None
-    if run_id is not None:
-        run_row = journal.run(run_id)
-        if run_row is not None and run_row["plan_hash"] == built.plan_hash():
-            recorded_approval = approvals.get(run_row["approval_id"])
-            if recorded_approval is not None:
-                approval = recorded_approval
-                target = run_id
-    elif approval is not None and approval.approved:
+    if approval is not None and approval.approved:
         target = next(
             (
                 candidate["run_id"]
@@ -624,11 +611,24 @@ def _bundle_for(
 
 
 @router.get("/evidence")
-def evidence(run_id: str | None = None) -> dict[str, Any]:
+def evidence(
+    run_id: str | None = Query(default=None, pattern=r"^run-[0-9a-f]{12}$"),
+) -> dict[str, Any]:
     """The evidence bundle for a run, assembled from durable state."""
     settings = get_settings()
-    bundle, _ = _bundle_for(settings, run_id)
-    return bundle.to_dict()
+    _ledger(settings)
+    if run_id is not None:
+        import json
+
+        snapshot = settings.app_state_dir / "evidence" / run_id / "execution-snapshot.json"
+        if not snapshot.is_file():
+            raise HTTPException(
+                status_code=404, detail="No historical verification snapshot exists"
+            )
+        return json.loads(snapshot.read_text(encoding="utf-8"))
+    with file_lock(settings.app_state_dir / "estate.lock"):
+        bundle, _ = _bundle_for(settings)
+        return bundle.to_dict()
 
 
 @router.post(
@@ -643,46 +643,47 @@ def writeback() -> dict[str, Any]:
     nothing behind it.
     """
     settings = get_settings()
-    bundle, built = _bundle_for(settings)
+    with file_lock(settings.app_state_dir / "estate.lock"):
+        bundle, built = _bundle_for(settings)
 
-    if bundle.execution is None:
-        raise HTTPException(
-            status_code=409,
-            detail="nothing has been executed, so there is no outcome to write back",
+        if bundle.execution is None:
+            raise HTTPException(
+                status_code=409,
+                detail="nothing has been executed, so there is no outcome to write back",
+            )
+
+        state_dir = settings.ensure_state_dir()
+        evidence_dir = state_dir / "evidence" / bundle.execution.run_id
+        json_path, _markdown = bundle.write(evidence_dir)
+
+        public_evidence_ref = (
+            f"license-circuit-breaker://evidence/{bundle.execution.run_id}"
+        )
+        evidence_ref = (
+            public_evidence_ref
+            if settings.app_env.casefold() in PUBLIC_GUARDED_ENVIRONMENTS
+            else str(json_path)
+        )
+        receipts = record_containment_outcomes(
+            get_client(settings),
+            built,
+            settings.namespace,
+            verdict=bundle.verdict(),
+            contained_urns=frozenset(bundle.contained_urns),
+            residual_urns=frozenset(r.urn for r in bundle.residual()),
+            evidence_ref=evidence_ref,
+            ledger=_ledger(settings),
+            simulated=is_offline(settings),
         )
 
-    state_dir = settings.ensure_state_dir()
-    evidence_dir = state_dir / "evidence" / bundle.execution.run_id
-    json_path, _markdown = bundle.write(evidence_dir)
-
-    public_evidence_ref = (
-        f"license-circuit-breaker://evidence/{bundle.execution.run_id}"
-    )
-    evidence_ref = (
-        public_evidence_ref
-        if settings.app_env.casefold() in PUBLIC_GUARDED_ENVIRONMENTS
-        else str(json_path)
-    )
-    receipts = record_containment_outcomes(
-        get_client(settings),
-        built,
-        settings.namespace,
-        verdict=bundle.verdict(),
-        contained_urns=frozenset(bundle.contained_urns),
-        residual_urns=frozenset(r.urn for r in bundle.residual()),
-        evidence_ref=evidence_ref,
-        ledger=_ledger(settings),
-        simulated=is_offline(settings),
-    )
-
-    return {
-        "verdict": bundle.verdict(),
-        "simulated": is_offline(settings),
-        "evidence_path": evidence_ref,
-        "verified": sum(1 for r in receipts if r.verified),
-        "attempted": len(receipts),
-        "receipts": [r.to_dict() for r in receipts],
-    }
+        return {
+            "verdict": bundle.verdict(),
+            "simulated": is_offline(settings),
+            "evidence_path": evidence_ref,
+            "verified": sum(1 for r in receipts if r.verified),
+            "attempted": len(receipts),
+            "receipts": [r.to_dict() for r in receipts],
+        }
 
 
 # --- the demo estate ---------------------------------------------------
@@ -695,7 +696,9 @@ def estate() -> dict[str, Any]:
 
 
 class PredictRequest(BaseModel):
-    text: str = Field(default="the battery lasts all weekend and charges fast", min_length=1)
+    text: str = Field(
+        default="the battery lasts all weekend and charges fast", min_length=1, max_length=2000,
+    )
 
 
 @router.post("/demo/predict")
@@ -716,7 +719,10 @@ def demo_predict(request: PredictRequest = Body(default=PredictRequest())) -> di
 
 
 @router.get("/demo/search")
-def demo_search(q: str = "battery charge", limit: int = 3) -> dict[str, Any]:
+def demo_search(
+    q: str = Query(default="battery charge", max_length=2000),
+    limit: int = Query(default=3, ge=1, le=100),
+) -> dict[str, Any]:
     """The retrieval endpoint. Returns partner content until the index is purged."""
     paths = _paths(get_settings())
     try:
@@ -770,42 +776,42 @@ def demo_reset(request: ResetRequest = Body(default=ResetRequest())) -> dict[str
                 "delete approval or execution history"
             ),
         )
-    paths = _paths(settings)
-    plan_to_invalidate = _build_plan(settings) if public_guarded else None
+    with file_lock(settings.app_state_dir / "estate.lock"):
+        paths = _paths(settings)
+        plan_to_invalidate = _build_plan(settings) if not request.clear_governance else None
 
-    reset_estate(paths)
-    result = build_estate(paths)
-    get_client(settings, refresh=True)
+        reset_estate(paths)
+        result = build_estate(paths)
+        get_client(settings, refresh=True)
 
-    cleared = False
-    if request.clear_governance:
-        with _store(settings).connect() as connection:
-            for table in ("steps", "runs", "approvals", "plans"):
-                connection.execute(f"DELETE FROM {table}")  # noqa: S608
-        cleared = True
+        cleared = False
+        if request.clear_governance:
+            with _store(settings).connect() as connection:
+                for table in ("steps", "runs", "approvals", "plans"):
+                    connection.execute(f"DELETE FROM {table}")  # noqa: S608
+            cleared = True
 
-    approval_invalidated = False
-    if public_guarded:
-        assert plan_to_invalidate is not None
-        ApprovalStore(_store(settings)).record(
-            plan_to_invalidate,
-            approver="public-demo-reset",
-            decision=REJECTED,
-            note=(
-                "Public demo reset restored the disposable estate and "
-                "invalidated the prior approval. Review and approve the exact "
-                "plan before executing again."
-            ),
-        )
-        approval_invalidated = True
+        approval_invalidated = False
+        if plan_to_invalidate is not None:
+            ApprovalStore(_store(settings)).record(
+                plan_to_invalidate,
+                approver="demo-reset",
+                decision=REJECTED,
+                note=(
+                    "Demo reset restored the disposable estate and "
+                    "invalidated the prior approval. Review and approve the exact "
+                    "plan before executing again."
+                ),
+            )
+            approval_invalidated = True
 
-    return {
-        "rebuilt": True,
-        "summary": result.describe(),
-        "governance_cleared": cleared,
-        "approval_invalidated": approval_invalidated,
-        "estate": estate_status(paths),
-    }
+        return {
+            "rebuilt": True,
+            "summary": result.describe(),
+            "governance_cleared": cleared,
+            "approval_invalidated": approval_invalidated,
+            "estate": estate_status(paths),
+        }
 
 
 __all__ = [

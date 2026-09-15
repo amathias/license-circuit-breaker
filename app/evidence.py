@@ -34,6 +34,7 @@ from app.execution import ESCALATED, ExecutionReport, ResidualExposure
 from app.rights import Verdict
 from app.verification import VerificationReport
 from app.workflow import ImpactPlan
+from demo.estate import _write_json
 
 #: Stated wherever the bundle could be mistaken for a legal conclusion.
 LEGAL_DISCLAIMER = (
@@ -105,7 +106,8 @@ class EvidenceBundle:
 
         if not residual and not self.execution.failed and probes_passed:
             return "contained"
-        if residual and all(entry.reason == ESCALATED for entry in residual):
+        if (self.verification is not None and self.verification.checks_passed
+                and residual and all(entry.reason == ESCALATED for entry in residual)):
             return "escalated"
         return "residual"
 
@@ -289,9 +291,7 @@ class EvidenceBundle:
 
         json_path = target / f"{stem}.json"
         markdown_path = target / f"{stem}.md"
-        json_path.write_text(
-            json.dumps(self.to_dict(), indent=2, sort_keys=True, default=str), encoding="utf-8"
-        )
+        _write_json(json_path, self.to_dict())
         markdown_path.write_text(self.to_markdown(), encoding="utf-8")
         return json_path, markdown_path
 

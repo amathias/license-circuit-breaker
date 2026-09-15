@@ -152,7 +152,9 @@ class TestApiContract:
 
         assert response.status_code == 200
         assert response.json()["nodes"]
-        assert singleton_reads == [api_module.graph.SOURCE]
+        # Source authority and the replacement grant are independent inputs;
+        # descendant metadata is still fetched as one batch.
+        assert singleton_reads == [api_module.graph.SOURCE, api_module.graph.REPLACEMENT_SOURCE]
 
     def test_plan_response_carries_every_field_the_console_renders(self, client):
         body = client.get("/api/plan").json()

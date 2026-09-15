@@ -178,8 +178,25 @@ class ApprovalStore:
     def remember_plan(self, plan: ImpactPlan) -> None:
         """Persist the plan a decision refers to, so drift can be explained."""
         with self._store.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
+            event = plan.event
+            existing = connection.execute(
+                "SELECT content_hash FROM rights_events WHERE event_id = ? AND version = ?",
+                (event.event_id, event.version),
+            ).fetchone()
+            if existing is not None and existing["content_hash"] != event.content_hash():
+                raise ApprovalError(
+                    "Rights event changed: record a new event version before approval"
+                )
             connection.execute(
-                "INSERT OR REPLACE INTO plans (plan_hash, event_id, event_hash, payload, "
+                "INSERT OR IGNORE INTO rights_events "
+                "(event_id, version, source_urn, content_hash, payload, recorded_at) "
+                "VALUES (?, ?, ?, ?, ?, ?)",
+                (event.event_id, event.version, event.source_urn, event.content_hash(),
+                 event.model_dump_json(), event.recorded_at.isoformat()),
+            )
+            connection.execute(
+                "INSERT OR IGNORE INTO plans (plan_hash, event_id, event_hash, payload, "
                 "generated_at) VALUES (?, ?, ?, ?, ?)",
                 (
                     plan.plan_hash(),

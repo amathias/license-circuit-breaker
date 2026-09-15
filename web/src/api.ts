@@ -142,10 +142,10 @@ export const api = {
   plan: () => request<Plan>('/api/plan'),
   approvals: () => request<ApprovalState>('/api/approvals'),
 
-  approve: (approver: string, note: string, decision = 'approved', guarded = false) =>
+  approve: (planHash: string, approver: string, note: string, decision = 'approved', guarded = false) =>
     mutation<{ approval: Approval }>('/api/approvals', 'approve', guarded, {
       method: 'POST',
-      body: JSON.stringify({ approver, note, decision }),
+      body: JSON.stringify({ plan_hash: planHash, approver, note, decision }),
     }),
 
   execute: (options: { run_id?: string } = {}, guarded = false) =>

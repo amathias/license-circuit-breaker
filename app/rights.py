@@ -174,6 +174,11 @@ class RightsEvent(BaseModel):
     def content_hash(self) -> str:
         """Stable hash of the event's substantive content, for the evidence ledger."""
         payload = self.model_dump(mode="json", exclude={"recorded_at"})
+        # These fields are sets; JSON serialization must not inherit Python's
+        # per-process hash ordering or identical events acquire different IDs.
+        for license_key in ("prior", "new"):
+            for field in ("permitted_purposes", "environments"):
+                payload[license_key][field] = sorted(payload[license_key][field])
         encoded = json.dumps(payload, sort_keys=True, separators=(",", ":"))
         return hashlib.sha256(encoded.encode("utf-8")).hexdigest()
 
@@ -221,6 +226,7 @@ class Descendant(BaseModel):
         default_factory=frozenset, description="What this artifact currently does with the data"
     )
     rebuildable_from_replacement: bool = False
+    missing_evidence: tuple[str, ...] = ()
     contaminated_upstream: bool = Field(
         default=False,
         description=(

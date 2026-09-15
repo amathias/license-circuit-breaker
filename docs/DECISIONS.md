@@ -1009,6 +1009,68 @@ move to shared atomic state; or if authenticated operators are introduced.
 
 ---
 
+## ADR-032: Approval identity includes the evidence used to authorize it
+
+**Date:** 2026-09-15 · **Status:** accepted (local post-submission hardening)
+
+The independent review reproduced approval of a different plan than the one a user
+had displayed. Approval requests now carry the reviewed hash; rebuilding a different
+plan returns a conflict. The hash includes the shared versioned event, policy content,
+normalized descendant facts, lineage completeness, validation, replacement grant,
+and decisions. Generation time is excluded. An event version cannot be silently
+rewritten after it has been recorded.
+
+Missing purpose or authority evidence propagates through lineage as an escalation.
+Foreign descendants remain visible without becoming executable. A discovery resource
+limit is a failed plan, not proof that an incomplete graph is clear. The fixed demo
+supports already-effective PROD rights changes; other environments need an explicit
+implementation rather than ignored metadata.
+
+**Consequence:** old approval hashes stop authorizing enforcement. The console must
+refresh and review the current plan. Existing live replacement entities without the
+new structured rights grant escalate until a controlled metadata migration.
+
+## ADR-033: Resume is conditional on recorded approval and actual estate state
+
+**Date:** 2026-09-15 · **Status:** accepted (local post-submission hardening)
+
+Execution, estate reset/build, and the API execution snapshot cooperate through a
+cross-process file lock. Resume checks the run's plan, current recorded approval,
+completed step identities/scope, and a fingerprint of actual artifact bytes plus the
+estate generation. Failed prerequisite steps prevent dependent rebuild or model
+replacement while independent containment can proceed.
+
+Receipt appends use their own cross-process lock. JSON artifact and evidence writes
+use a flushed temporary file and atomic replacement. Neither the local hash chain
+nor estate fingerprints are externally anchored, so they do not prove that a local
+administrator has preserved history. Tail deletion remains outside the ledger's
+integrity guarantee. Filesystem effects and SQLite checkpoints are not one transaction;
+drift after a crash conservatively refuses resume.
+
+**Consequence:** legacy runs without fingerprints require a fresh reviewed run.
+Historical API evidence is an execution-time snapshot; the default evidence view
+continues to probe current state. Deployment still requires a hosted state audit.
+
+## ADR-034: Passing probes and complete containment are different facts
+
+**Date:** 2026-09-15 · **Status:** accepted (local post-submission hardening)
+
+Verification records both `checks_passed` and `coverage_complete`; `contained` requires
+both. Any failed precision probe becomes residual exposure. Escalation-only plans
+cannot become contained because an unrelated availability check passed. Probes check
+index/model bytes against manifests, including when a serving control is frozen.
+
+DataHub outcome properties use supported SDK PATCH proposals rather than merging an
+indexed read into a replacement aspect. Failed attempts retain unverified receipts.
+The status tag and custom properties remain separate, non-transactional writes, and
+the live PATCH path still requires server acceptance testing. Fixture probes remain
+local evidence, not independent attestation or model-unlearning proof.
+
+The reproducible dependency set is `uv.lock`; CI adds archive installation and pins
+actions by commit. The isolated project build uses setuptools 83.0.0, while the pinned
+DataHub SDK still requires an older runtime setuptools. The dependency exception and
+all finding-level limits are recorded in [REVIEW_REMEDIATION.md](REVIEW_REMEDIATION.md).
+
 ## Versions
 
 **No live DataHub evidence is included in repository-generated artifacts.** Local examples are

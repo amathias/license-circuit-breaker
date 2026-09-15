@@ -273,7 +273,7 @@ def check_entity_coverage(client: DataHubClient, namespace: Namespace) -> Check:
         if entity.domain is None:
             problems.append(f"{short}: no domain")
             continue
-        missing_props = entity.missing_properties()
+        missing_props = entity.missing_properties(allow_empty_purposes=urn == SENTINEL_URN)
         if missing_props:
             problems.append(f"{short}: missing {sorted(missing_props)}")
 

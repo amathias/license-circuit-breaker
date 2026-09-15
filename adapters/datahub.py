@@ -71,8 +71,18 @@ class EntityContext:
     def has_tag(self, tag: str) -> bool:
         return tag in self.tags
 
-    def missing_properties(self) -> frozenset[str]:
-        return frozenset(REQUIRED_CUSTOM_PROPERTIES - set(self.custom_properties))
+    def missing_properties(self, *, allow_empty_purposes: bool = False) -> frozenset[str]:
+        from app.rights import ArtifactClass, Purpose
+
+        missing = set(REQUIRED_CUSTOM_PROPERTIES - set(self.custom_properties))
+        purposes = self.custom_properties.get("purposes")
+        if not (allow_empty_purposes and purposes == "") and (
+                not isinstance(purposes, str) or not purposes.strip()
+                or any(p.strip() not in {p.value for p in Purpose} for p in purposes.split(","))):
+            missing.add("purposes")
+        if self.custom_properties.get("artifact_class") not in {a.value for a in ArtifactClass}:
+            missing.add("artifact_class")
+        return frozenset(missing)
 
 
 @dataclass(frozen=True)
@@ -326,17 +336,8 @@ class LiveDataHubClient:
 
         from adapters.catalog import CatalogError
 
-        existing = self.get_entity(urn)
-        merged = dict(existing.custom_properties) if existing else {}
-        merged.update({str(k): str(v) for k, v in properties.items()})
-
         try:
-            self._get_catalog().set_custom_properties(
-                urn,
-                name=existing.name if existing else urn,
-                description=existing.description if existing else "",
-                properties=merged,
-            )
+            self._get_catalog().patch_custom_properties(urn, properties)
         except CatalogError as exc:
             raise DataHubError(str(exc)) from exc
         except NamespaceViolation:
@@ -442,8 +443,16 @@ def record_revocation(
     # Only one status tag may apply at a time, or an entity contained after an
     # earlier residual run would carry both and read as ambiguous.
     kept = [t for t in prior_tags if t not in _STATUS_TAGS.values()]
-    client.set_tags(urn, sorted({*kept, tag}))
-    client.set_properties(urn, properties)
+    try:
+        client.set_tags(urn, sorted({*kept, tag}))
+        client.set_properties(urn, properties)
+    except DataHubError as exc:
+        return RevocationWriteback(
+            urn=urn, status=status, tag=tag,
+            aspects=("globalTags", "datasetProperties"), properties=properties,
+            written_at=datetime.now(UTC), verified=False, simulated=simulated,
+            detail=f"Writeback failed and may be partially applied: {exc}",
+        )
 
     observed = client.get_entity(urn)
     notes: list[str] = []
@@ -760,11 +769,27 @@ def _to_entity_context(urn: str, raw: dict[str, Any]) -> EntityContext:
         name=str(raw.get("name") or properties.get("name") or ""),
         tags=_tag_names(raw.get("tags")),
         domain=_domain_urn(raw.get("domain")),
-        owners=(),
+        owners=_owners(raw.get("ownership")),
         description=properties.get("description"),
         custom_properties=_custom_properties(properties.get("customProperties")),
         active=_is_active(raw),
     )
+
+
+def _owners(ownership: Any) -> tuple[str, ...]:
+    if ownership is None:
+        return ()
+    owners = _require_mapping(ownership, "ownership").get("owners", [])
+    if not isinstance(owners, list):
+        raise PayloadError("ownership owners must be a list")
+    result = []
+    for entry in owners:
+        owner = _require_mapping(entry, "ownership entry").get("owner")
+        urn = owner if isinstance(owner, str) else _require_mapping(owner, "owner").get("urn")
+        if not isinstance(urn, str) or not urn:
+            raise PayloadError("owner must identify a URN")
+        result.append(urn)
+    return tuple(sorted(set(result)))
 
 
 def _to_lineage_edges(source_urn: str, payload: Any) -> list[LineageEdge]:

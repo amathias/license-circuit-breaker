@@ -28,7 +28,7 @@ from app.evidence import build_bundle
 from app.execution import ExecutionError, execute_plan, plan_steps
 from app.namespace import NamespaceViolation
 from app.receipts import ReceiptLedger
-from app.rights import Action, License, Purpose, RightsEvent, RightsState
+from app.rights import Action
 from app.store import GovernanceStore
 from app.verification import verify_plan
 from app.workflow import (
@@ -37,38 +37,9 @@ from app.workflow import (
     record_containment_outcomes,
 )
 from demo.estate import EstateError, EstatePaths, build_estate, estate_status, reset_estate
-from demo.graph import REPLACEMENT_SOURCE, SOURCE
+from demo.events import demo_rights_event
 from demo.seed import PartialSeedError, SeedError, VerificationError, reset, restore, seed
 from demo.serving import ServingRefused, fetch_export, predict, search
-
-
-def demo_rights_event() -> RightsEvent:
-    """The rights event the demo revokes.
-
-    Training and retrieval are removed; analytics is retained, which is what makes
-    the unaffected branch provable rather than asserted.
-    """
-    return RightsEvent(
-        event_id="evt-lcb-demo-001",
-        effective_at=datetime.now(UTC),
-        source_urn=SOURCE,
-        prior=License(
-            license_id="PARTNER-2026-01",
-            name="Partner review feed agreement",
-            permitted_purposes=frozenset(
-                {Purpose.TRAINING, Purpose.RETRIEVAL, Purpose.ANALYTICS}
-            ),
-        ),
-        new=License(
-            license_id="PARTNER-2026-01",
-            name="Partner review feed agreement",
-            permitted_purposes=frozenset({Purpose.ANALYTICS}),
-            state=RightsState.RESTRICTED,
-        ),
-        reason="Partner revoked training and retrieval rights effective immediately",
-        replacement_source_urn=REPLACEMENT_SOURCE,
-        requester="governance@example.com",
-    )
 
 
 def _report(label: str, simulated: bool) -> None:

@@ -39,13 +39,26 @@ def client() -> TestClient:
 
 
 def _approve(client, **kwargs):
-    payload = {"approver": "judge@example.com", **kwargs}
+    payload = {"approver": "judge@example.com",
+               "plan_hash": client.get("/api/plan").json()["plan_hash"], **kwargs}
     response = client.post("/api/approvals", json=payload)
     assert response.status_code == 200, response.text
     return response.json()["approval"]
 
 
 class TestExposureBefore:
+    def test_historical_snapshot_survives_reset(self, client):
+        _approve(client)
+        response = client.post("/api/execute", json={})
+        assert response.status_code == 200, response.text
+        run_id = response.json()["execution"]["run_id"]
+        before = client.get("/api/evidence", params={"run_id": run_id}).json()
+        assert before["verification"]["checks_passed"]
+        assert client.post("/api/demo/reset", json={}).status_code == 200
+        after = client.get("/api/evidence", params={"run_id": run_id}).json()
+        assert before == after
+        assert client.get("/api/evidence").json()["verdict"] == "not_started"
+
     def test_the_prediction_endpoint_answers(self, client):
         response = client.post("/api/demo/predict", json={"text": "battery charge"})
         assert response.status_code == 200
@@ -153,6 +166,7 @@ class TestApprovalGate:
             "/api/approvals",
             json={
                 "approver": "judge@example.com",
+                "plan_hash": client.get("/api/plan").json()["plan_hash"],
                 "scope": {graph.PREDICT_API: ["freeze", "purge"]},
             },
         )
@@ -194,7 +208,7 @@ class TestExecutionAndVerification:
         _approve(client)
         client.post("/api/execute", json={})
         body = client.get("/api/verify").json()
-        assert body["contained"] is True
+        assert body["checks_passed"] is True
         assert len(body["probes"]) == 8
 
     def test_fault_injection_is_not_exposed_over_http(self, client):
@@ -308,9 +322,10 @@ class TestReset:
         approval = _approve(client)
         client.post("/api/execute", json={})
         client.post("/api/demo/reset", json={})
-        assert client.get("/api/approvals").json()["current"]["approval_id"] == (
-            approval["approval_id"]
-        )
+        state = client.get("/api/approvals").json()
+        assert state["current"]["decision"] == "rejected"
+        assert approval["approval_id"] in {a["approval_id"] for a in state["history"]}
+        assert client.post("/api/execute", json={}).status_code == 409
 
     def test_clearing_governance_removes_the_approval(self, client):
         _approve(client)
@@ -323,7 +338,7 @@ class TestReset:
             _approve(client)
             execution = client.post("/api/execute", json={}).json()["execution"]
             assert all(step["status"] == "completed" for step in execution["steps"])
-            assert client.get("/api/verify").json()["contained"] is True
+            assert client.get("/api/verify").json()["checks_passed"] is True
 
     def test_a_rebuilt_index_holds_only_approved_rows_after_a_second_run(self, client):
         _approve(client)
@@ -470,7 +485,8 @@ class TestPublicMutationBoundary:
         approved = client.post(
             "/api/approvals",
             headers={"X-Demo-Confirmation": approve_token},
-            json={"approver": "judge@example.com", "note": "reviewed"},
+            json={"approver": "judge@example.com", "note": "reviewed",
+                  "plan_hash": client.get("/api/plan").json()["plan_hash"]},
         )
         assert approved.status_code == 200, approved.text
 

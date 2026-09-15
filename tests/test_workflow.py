@@ -342,13 +342,14 @@ class TestDescendantDiscovery:
         assert validations
         assert client.batch_log == [len(validations)]
 
-    def test_foreign_descendants_are_excluded_but_reported(self, client):
+    def test_foreign_descendants_remain_visible_with_missing_authority(self, client):
         client.add_entity(FOREIGN, tags=(NS.project_tag,))
         client.add_edge(SOURCE, FOREIGN)
 
         descendants, validations = discover_descendants(client, SOURCE, NS)
 
-        assert all(d.urn != FOREIGN for d in descendants)
+        foreign = next(d for d in descendants if d.urn == FOREIGN)
+        assert any("namespace" in issue for issue in foreign.missing_evidence)
         # Reported, not silently dropped -- a cross-project lineage link is
         # something an operator needs to see.
         assert any(v.urn == FOREIGN and not v.in_namespace for v in validations)

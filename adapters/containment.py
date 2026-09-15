@@ -28,7 +28,7 @@ an artifact was *not* contained.
 
 from __future__ import annotations
 
-import json
+import hashlib
 import shutil
 from collections.abc import Callable
 from dataclasses import dataclass, field
@@ -38,6 +38,7 @@ from typing import Any, Protocol
 
 from app.namespace import Namespace, require_in_namespace, require_path_within
 from app.rights import Action, ArtifactClass
+from demo import graph
 from demo.estate import (
     BLOCKED,
     DUCKDB_TABLE,
@@ -49,6 +50,7 @@ from demo.estate import (
     EstateError,
     EstatePaths,
     ServingControl,
+    _write_json,
     activate_version,
     active_version,
     build_index,
@@ -146,6 +148,13 @@ class AdapterContext:
     def guard_path(self, path: Path, operation: str) -> Path:
         """Refuse any filesystem target outside the estate root."""
         return require_path_within(path, self.paths.root, operation=operation)
+
+    def require_supported_replacement(self, source: str) -> None:
+        if source != graph.REPLACEMENT_SOURCE:
+            raise ContainmentError(
+                "This local adapter only implements the approved demo feed; "
+                "it cannot substitute a different source or relabel its provenance"
+            )
 
     def maybe_fail(self, adapter: str, urn: str, action: Action) -> None:
         if self.fault_injector is not None:
@@ -263,20 +272,16 @@ class VectorIndexAdapter:
             vectors.unlink()
 
         manifest_path.parent.mkdir(parents=True, exist_ok=True)
-        manifest_path.write_text(
-            json.dumps(
-                {
-                    "purged": True,
-                    "purged_at": datetime.now(UTC).isoformat(),
-                    "purged_row_count": len(purged_ids),
-                    "source_urns": [],
-                    "row_ids": [],
-                    "vector_count": 0,
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
+        _write_json(
+            manifest_path,
+            {
+                "purged": True,
+                "purged_at": datetime.now(UTC).isoformat(),
+                "purged_row_count": len(purged_ids),
+                "source_urns": [],
+                "row_ids": [],
+                "vector_count": 0,
+            },
         )
 
         _model, entries = load_index(paths)
@@ -303,6 +308,7 @@ class VectorIndexAdapter:
                 f"cannot rebuild {urn}: the rights event names no approved replacement source"
             )
         require_in_namespace(source, context.namespace, operation="rebuild-index-source")
+        context.require_supported_replacement(source)
 
         before = index_manifest(paths).get("content_hash")
         count = build_index(paths, source_urn=source, source_feed="approved")
@@ -368,23 +374,19 @@ class ExportQuarantineAdapter:
             )
 
         shutil.move(str(published), str(target))
-        (target.parent / "QUARANTINE.json").write_text(
-            json.dumps(
-                {
-                    "urn": urn,
-                    "quarantined_at": datetime.now(UTC).isoformat(),
-                    "actor": context.actor,
-                    "reason": "approved containment action for a revoked upstream right",
-                    "original_path": str(published),
-                    "note": (
-                        "Quarantine covers this tracked export only. Copies distributed "
-                        "outside the demonstrated DataHub graph are not addressed."
-                    ),
-                },
-                indent=2,
-                sort_keys=True,
-            ),
-            encoding="utf-8",
+        _write_json(
+            target.parent / "QUARANTINE.json",
+            {
+                "urn": urn,
+                "quarantined_at": datetime.now(UTC).isoformat(),
+                "actor": context.actor,
+                "reason": "approved containment action for a revoked upstream right",
+                "original_path": str(published),
+                "note": (
+                    "Quarantine covers this tracked export only. Copies distributed "
+                    "outside the demonstrated DataHub graph are not addressed."
+                ),
+            },
         )
 
         return _receipt(
@@ -436,6 +438,7 @@ class ModelAdapter:
                 f"cannot retrain {urn}: the rights event names no approved replacement source"
             )
         require_in_namespace(source, context.namespace, operation="retrain-source")
+        context.require_supported_replacement(source)
         context.guard_path(paths.model_root(name), "retrain")
 
         existing = training_manifest(paths, name, RETRAINED_VERSION)
@@ -481,6 +484,13 @@ class ModelAdapter:
                 "Retrain must succeed before the served model is swapped."
             )
 
+        candidate = training_manifest(paths, name, RETRAINED_VERSION)
+        candidate_path = paths.model_root(name) / RETRAINED_VERSION / "model.json"
+        if (candidate.get("training_sources") != [context.replacement_source_urn]
+                or candidate.get("artifact_hash") != hashlib.sha256(
+                    candidate_path.read_bytes()
+                ).hexdigest()):
+            raise ContainmentError("Candidate model does not match approved provenance and content")
         changed = activate_version(paths, name, RETRAINED_VERSION)
         manifest = training_manifest(paths, name)
 
@@ -564,6 +574,7 @@ class WarehouseAdapter:
                 f"cannot rebuild {urn}: the rights event names no approved replacement source"
             )
         require_in_namespace(source, context.namespace, operation="rebuild-source")
+        context.require_supported_replacement(source)
 
         before = table_row_ids(context.paths, table)
         rebuild_derived_from(
