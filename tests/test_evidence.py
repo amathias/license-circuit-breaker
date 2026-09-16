@@ -9,6 +9,7 @@ and residual exposure must be impossible to lose.
 from __future__ import annotations
 
 import json
+from dataclasses import replace
 from datetime import UTC, datetime
 
 import pytest
@@ -371,6 +372,30 @@ class TestDurableWriteback:
         tags = client.get_entity(graph.PREDICT_API).tags
         assert "project-license-circuit-breaker" in tags
         assert "lcb-demo-fixture" in tags
+
+    def test_concurrent_unrelated_tag_addition_is_preserved(self, client, monkeypatch):
+        original_patch = client.patch_tags
+
+        def patch_with_concurrent_addition(urn, *, add=(), remove=()):
+            entity = client.entities[urn]
+            client.entities[urn] = replace(
+                entity, tags=tuple(sorted({*entity.tags, "concurrent-review-tag"}))
+            )
+            original_patch(urn, add=add, remove=remove)
+
+        monkeypatch.setattr(client, "patch_tags", patch_with_concurrent_addition)
+        receipt = record_revocation(
+            client,
+            graph.PREDICT_API,
+            NS,
+            status=STATUS_CONTAINED,
+            event_id="e",
+            plan_hash="h",
+            evidence_ref="ref",
+        )
+
+        assert receipt.verified is True
+        assert "concurrent-review-tag" in client.get_entity(graph.PREDICT_API).tags
 
     def test_only_one_status_tag_applies_at_a_time(self, client):
         # An entity contained after an earlier residual run must not carry both

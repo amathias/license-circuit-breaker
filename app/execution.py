@@ -9,10 +9,10 @@ Three behaviours matter more than the mechanics:
 purge still need to happen -- stopping would leave *more* exposed, not less. The
 failure is recorded and surfaces as residual exposure.
 
-**Resume replays only unfinished work.** Each step is journalled the moment it
-completes, so a run killed halfway can be resumed and will not re-purge an index
-it already rebuilt. The adapters are idempotent as a second line of defence, but
-correctness does not depend on that.
+**Resume replays only unfinished work.** Action intent is journalled before the
+adapter runs, and the final outcome and estate fingerprint commit together. A
+run killed during an adapter can therefore retry that one idempotent action,
+while completed actions are not repeated.
 
 **Nothing is quietly dropped.** Every decision in the plan appears in the report
 with a status. An action nobody approved, an artifact class no adapter supports,
@@ -52,6 +52,7 @@ from app.workflow import ImpactPlan
 
 #: Step statuses. ``completed`` is the only one a resume skips.
 COMPLETED = "completed"
+IN_PROGRESS = "in_progress"
 FAILED = "failed"
 UNSUPPORTED = "unsupported"
 NOT_APPROVED = "not_approved"
@@ -200,23 +201,22 @@ class ExecutionJournal:
                     estate_fingerprint is not None
                     and existing["estate_fingerprint"] != estate_fingerprint
                 ):
-                    raise ExecutionError(
-                        "Resume refused: estate changed or has no recorded fingerprint. "
-                        "Review current state and start a fresh run."
-                    )
+                    pending = connection.execute(
+                        "SELECT COUNT(*) FROM steps WHERE run_id = ? AND status = ?",
+                        (run_id, IN_PROGRESS),
+                    ).fetchone()[0]
+                    if pending != 1:
+                        raise ExecutionError(
+                            "Resume refused: estate changed or has no recorded fingerprint, "
+                            "and the journal has no single interrupted action that can explain "
+                            "the change. Review current state and start a fresh run."
+                        )
             connection.execute(
                 "INSERT OR IGNORE INTO runs "
                 "(run_id, plan_hash, approval_id, status, started_at, estate_fingerprint) "
                 "VALUES (?, ?, ?, ?, ?, ?)",
                 (run_id, plan_hash, approval_id, RUN_RUNNING, datetime.now(UTC).isoformat(),
                  estate_fingerprint),
-            )
-
-    def checkpoint(self, run_id: str, fingerprint: str) -> None:
-        with self._store.connect() as connection:
-            connection.execute(
-                "UPDATE runs SET estate_fingerprint = ? WHERE run_id = ?",
-                (fingerprint, run_id),
             )
 
     def finish(self, run_id: str) -> None:
@@ -226,9 +226,30 @@ class ExecutionJournal:
                 (RUN_FINISHED, datetime.now(UTC).isoformat(), run_id),
             )
 
-    def record(self, run_id: str, outcome: StepOutcome) -> None:
-        """Persist one step immediately. This is what makes resume possible."""
+    def record_intent(self, run_id: str, step: PlannedStep) -> None:
+        """Persist action intent before an adapter can change the estate."""
         with self._store.connect() as connection:
+            connection.execute(
+                "INSERT OR REPLACE INTO steps (run_id, seq, urn, action, status, changed, "
+                "detail, error, evidence, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                (
+                    run_id,
+                    step.seq,
+                    step.urn,
+                    step.action.value,
+                    IN_PROGRESS,
+                    0,
+                    "adapter action started; final outcome not yet recorded",
+                    None,
+                    "{}",
+                    datetime.now(UTC).isoformat(),
+                ),
+            )
+
+    def record(self, run_id: str, outcome: StepOutcome, estate_fingerprint: str) -> None:
+        """Atomically persist a final step outcome and its estate checkpoint."""
+        with self._store.connect() as connection:
+            connection.execute("BEGIN IMMEDIATE")
             connection.execute(
                 "INSERT OR REPLACE INTO steps (run_id, seq, urn, action, status, changed, "
                 "detail, error, evidence, recorded_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
@@ -245,12 +266,25 @@ class ExecutionJournal:
                     datetime.now(UTC).isoformat(),
                 ),
             )
+            connection.execute(
+                "UPDATE runs SET estate_fingerprint = ? WHERE run_id = ?",
+                (estate_fingerprint, run_id),
+            )
 
     def completed_steps(self, run_id: str) -> dict[int, dict[str, Any]]:
         """Steps already finished successfully, keyed by sequence number."""
         with self._store.connect() as connection:
             rows = connection.execute(
                 "SELECT * FROM steps WHERE run_id = ? AND status = ?", (run_id, COMPLETED)
+            ).fetchall()
+        return {int(row["seq"]): dict(row) for row in rows}
+
+    def in_progress_steps(self, run_id: str) -> dict[int, dict[str, Any]]:
+        """Actions that began but did not durably record a final outcome."""
+        with self._store.connect() as connection:
+            rows = connection.execute(
+                "SELECT * FROM steps WHERE run_id = ? AND status = ?",
+                (run_id, IN_PROGRESS),
             ).fetchall()
         return {int(row["seq"]): dict(row) for row in rows}
 
@@ -401,8 +435,17 @@ def _execute_plan(
 
     journal.start(run_id, plan.plan_hash(), approval.approval_id, estate_fingerprint(context.paths))
 
-    already_done = journal.completed_steps(run_id)
     steps = plan_steps(plan)
+    already_done = journal.completed_steps(run_id)
+    interrupted = journal.in_progress_steps(run_id)
+    if len(interrupted) > 1:
+        raise ExecutionError("Resume refused: journal contains multiple interrupted actions")
+    for seq, row in interrupted.items():
+        if seq >= len(steps):
+            raise ExecutionError("Resume refused: interrupted step is absent from the plan")
+        step = steps[seq]
+        if row["urn"] != step.urn or row["action"] != step.action.value:
+            raise ExecutionError("Resume refused: interrupted step does not match the plan")
     outcomes: list[StepOutcome] = []
 
     for step in steps:
@@ -411,16 +454,16 @@ def _execute_plan(
             if row["urn"] != step.urn or row["action"] != step.action.value:
                 raise ExecutionError("Resume refused: completed step does not match the plan")
             require_scope(approval, step.urn, step.action)
-            outcomes.append(
-                StepOutcome(
-                    step=step,
-                    status=COMPLETED,
-                    changed=bool(row["changed"]),
-                    detail=row["detail"],
-                    evidence=json.loads(row["evidence"] or "{}"),
-                    resumed=True,
-                )
+            outcome = StepOutcome(
+                step=step,
+                status=COMPLETED,
+                changed=bool(row["changed"]),
+                detail=row["detail"],
+                evidence=json.loads(row["evidence"] or "{}"),
+                resumed=True,
             )
+            _log_once(ledger, run_id, outcome)
+            outcomes.append(outcome)
             continue
 
         failed_dependencies = []
@@ -442,10 +485,10 @@ def _execute_plan(
                 evidence={"attempted": False},
             )
         else:
+            journal.record_intent(run_id, step)
             outcome = _run_step(registry, context, approval, step)
-        journal.record(run_id, outcome)
-        journal.checkpoint(run_id, estate_fingerprint(context.paths))
-        _log(ledger, run_id, outcome)
+        journal.record(run_id, outcome, estate_fingerprint(context.paths))
+        _log_once(ledger, run_id, outcome)
         outcomes.append(outcome)
 
     journal.finish(run_id)
@@ -626,8 +669,14 @@ def residual_exposure(
     return tuple(residual)
 
 
-def _log(ledger: ReceiptLedger | None, run_id: str, outcome: StepOutcome) -> None:
+def _log_once(ledger: ReceiptLedger | None, run_id: str, outcome: StepOutcome) -> None:
     if ledger is None:
+        return
+    if any(
+        entry.get("payload", {}).get("run_id") == run_id
+        and entry.get("payload", {}).get("seq") == outcome.step.seq
+        for entry in ledger.entries()
+    ):
         return
     ledger.append(
         operation=f"containment.{outcome.step.action.value}",
@@ -652,6 +701,7 @@ __all__ = [
     "COMPLETED",
     "ESCALATED",
     "FAILED",
+    "IN_PROGRESS",
     "NOT_APPROVED",
     "NOT_APPROVED_REASON",
     "NO_ADAPTER",

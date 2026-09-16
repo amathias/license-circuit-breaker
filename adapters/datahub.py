@@ -154,6 +154,10 @@ class DataHubClient(Protocol):
 
     def set_tags(self, urn: str, tags: list[str]) -> None: ...
 
+    def patch_tags(
+        self, urn: str, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = (),
+    ) -> None: ...
+
     def set_properties(self, urn: str, properties: dict[str, str]) -> None: ...
 
 
@@ -325,6 +329,22 @@ class LiveDataHubClient:
         except Exception as exc:
             raise DataHubUnavailable(f"tag writeback failed: {exc}") from exc
 
+    def patch_tags(
+        self, urn: str, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = (),
+    ) -> None:
+        """Add and remove only named tags, preserving unrelated concurrent changes."""
+        require_in_namespace(urn, self._namespace, operation="patch_tags")
+        from adapters.catalog import CatalogError
+
+        try:
+            self._get_catalog().patch_tags(urn, add=add, remove=remove)
+        except CatalogError as exc:
+            raise DataHubError(str(exc)) from exc
+        except NamespaceViolation:
+            raise
+        except Exception as exc:
+            raise DataHubUnavailable(f"tag patch failed: {exc}") from exc
+
     def set_properties(self, urn: str, properties: dict[str, str]) -> None:
         """Merge custom properties into the entity's ``datasetProperties``.
 
@@ -442,9 +462,9 @@ def record_revocation(
     prior_tags = list(client.get_tags(urn))
     # Only one status tag may apply at a time, or an entity contained after an
     # earlier residual run would carry both and read as ambiguous.
-    kept = [t for t in prior_tags if t not in _STATUS_TAGS.values()]
+    prior_status_tags = tuple(sorted(set(prior_tags) & set(_STATUS_TAGS.values())))
     try:
-        client.set_tags(urn, sorted({*kept, tag}))
+        client.patch_tags(urn, add=(tag,), remove=prior_status_tags)
         client.set_properties(urn, properties)
     except DataHubError as exc:
         return RevocationWriteback(
@@ -464,6 +484,10 @@ def record_revocation(
         if tag not in observed.tags:
             verified = False
             notes.append(f"status tag {tag!r} not observed; tags are {sorted(observed.tags)}")
+        conflicting = sorted((set(observed.tags) & set(_STATUS_TAGS.values())) - {tag})
+        if conflicting:
+            verified = False
+            notes.append(f"conflicting status tags remain: {conflicting}")
         for key, value in properties.items():
             if observed.custom_properties.get(key) != value:
                 verified = False
@@ -509,8 +533,7 @@ def reversible_tag_writeback(
     require_in_namespace(urn, namespace, operation="reversible_tag_writeback")
 
     prior = list(client.get_tags(urn))
-    applied = sorted(set(prior) | {tag})
-
+    probe_preexisting = tag in prior
     started = False
     write_failed = False
     verified = False
@@ -519,7 +542,7 @@ def reversible_tag_writeback(
 
     try:
         started = True
-        client.set_tags(urn, applied)
+        client.patch_tags(urn, add=(tag,))
 
         observed = list(client.get_tags(urn))
         verified = tag in observed
@@ -532,11 +555,16 @@ def reversible_tag_writeback(
         notes.append(f"write or verification failed: {exc}")
     finally:
         try:
-            client.set_tags(urn, prior)
+            if not probe_preexisting:
+                client.patch_tags(urn, remove=(tag,))
             after = list(client.get_tags(urn))
-            restored = sorted(after) == sorted(prior)
+            probe_restored = (tag in after) if probe_preexisting else (tag not in after)
+            restored = probe_restored and set(prior) <= set(after)
             if not restored:
-                notes.append(f"restore left tags as {sorted(after)}, expected {sorted(prior)}")
+                notes.append(
+                    f"restore changed the probe tag or removed prior tags: {sorted(after)}; "
+                    f"prior tags were {sorted(prior)}"
+                )
         except (DataHubError, NamespaceViolation) as exc:
             notes.append(f"restore failed: {exc}")
 

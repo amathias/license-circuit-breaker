@@ -144,6 +144,27 @@ class FakeDataHubClient:
         self.entities[urn] = _replace(entity, custom_properties=merged)
         self.write_log.append((urn, tuple(sorted(properties))))
 
+    def patch_tags(
+        self, urn: str, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = (),
+    ) -> None:
+        """Apply tag deltas like the live SDK PATCH path."""
+        require_in_namespace(urn, self.namespace, operation="patch_tags")
+        if self.fail_next_write:
+            self.fail_next_write = False
+            raise DataHubError("simulated write failure")
+        entity = self.entities.get(urn)
+        if entity is None:
+            raise DataHubError(f"cannot tag unknown entity {urn!r}")
+        if self.swallow_restore and remove:
+            self.write_log.append((urn, tuple(sorted(add))))
+            return
+        tags = (set(entity.tags) - set(remove)) | set(add)
+        self.entities[urn] = _replace_tags(entity, tuple(sorted(tags)))
+        self.write_log.append((urn, tuple(sorted(tags))))
+        if self.fail_verify_read:
+            self.fail_verify_read = False
+            self._verify_reads = 1
+
     def set_status(self, urn: str, removed: bool) -> None:
         """Soft delete or restore, guarded exactly like a tag write."""
         require_in_namespace(urn, self.namespace, operation="set_status")

@@ -12,7 +12,7 @@ was used as a defect report; no approval from the reviewer is required to fix it
 |---|---|---|
 | LCB-01: incomplete purpose metadata | Missing, empty, malformed, and mixed-validity purposes escalate. Missing evidence propagates through intermediate ancestors. Readiness validates values; policy loading rejects unknown conditions and invalid condition types. | `test_review_policy.py` covers the normalized-to-export false negative and preserves the unaffected analytics branch. |
 | LCB-02: approval drift | Approval requests must include the displayed plan hash. Identity covers the stable shared CLI/API event, policy, normalized descendant facts, replacement grant, validation, and decisions. Recorded event versions cannot silently change content. | `test_review_authorization.py` rejects stale/missing hashes; policy tests change facts without changing actions; contract tests compare event hashes across process hash seeds. |
-| LCB-03: unsafe resume | A run must match the plan, recorded approval, completed step identities, scope, and current estate fingerprint. Every build has a new generation. Execution rechecks the current approval. | Cross-plan and rebuilt-estate regressions reject resume before journal mutation. Legacy runs without fingerprints require a fresh run. |
+| LCB-03: unsafe resume | A run must match the plan, recorded approval, completed step identities, scope, and current estate fingerprint. Action intent is durable before an adapter runs; final outcome and fingerprint commit atomically. Exactly one matching interrupted action may be retried through its idempotent adapter. | Cross-plan and unexplained rebuilt-estate regressions reject resume before journal mutation. A process-death regression resumes after a quarantine move, and quarantine repairs missing metadata. Legacy runs without fingerprints require a fresh run. |
 | LCB-04: environment bypass | Environment names are normalized and allowlisted. Unset defaults to read-only production; typos fail configuration validation. Docs use the same settings loader as runtime guards. | Tests cover whitespace, unknown names, and unset configuration. Trusted local modes remain explicitly selectable. |
 | LCB-05: false all-clear / over-reach | Failed precision checks become residual exposure. Passing observed checks is distinct from complete coverage. Escalations prevent `contained=true`; UI wording follows the evidence verdict. | Evidence regressions delete the unaffected table/model and cover escalation-only verification. |
 | LCB-06: receipt integrity | Receipt append and validation use cooperating thread/process locks. Planning GETs no longer append receipts or remember plans. Evidence reads and execution reject an invalid chain. | Tests exercise 160 threaded appends and 60 appends across three processes. Tail deletion remains undetectable without an external trusted anchor; documentation now says so. |
@@ -28,16 +28,19 @@ was used as a defect report; no approval from the reviewer is required to fix it
 - **Historical evidence:** the API saves verification immediately after execution and serves that
   snapshot for a requested run. Reset does not rewrite it. Execution and snapshotting share the
   estate lock. The default evidence view explicitly describes current state.
-- **DataHub property updates:** outcome properties now use the pinned SDK's dataset PATCH builder.
-  The offline contract test inspects the real SDK proposal and proves no stale metadata merge is
-  performed. Live server acceptance of this PATCH has not been checked in this remediation.
+- **DataHub metadata updates:** outcome properties and status tags use the pinned SDK's dataset
+  PATCH builder. Offline contract tests inspect the real SDK proposals and prove that neither
+  path replaces an aspect from a stale indexed read. A concurrent unrelated tag survives status
+  writeback. Live server acceptance of these PATCH operations has not been checked in this
+  remediation.
 - **Partial writeback:** failed writes return an unverified receipt stating that partial application
-  is possible. Tags and properties remain separate writes. Tag replacement still has a concurrent
-  writer risk; this change does not claim transactional catalog updates.
-- **Crash recovery:** atomic JSON writes prevent partial JSON documents. Filesystem actions and
-  SQLite journal writes are not one transaction. A crash between them can leave side effects;
-  fingerprint drift refuses unsafe resume. Quarantine metadata can still be absent after a crash
-  between the move and metadata write. Inspect state before a fresh approved run.
+  is possible. Tags and properties remain separate, non-transactional writes. A concurrent status
+  writer can still race; verification rereads and rejects conflicting status tags.
+- **Crash recovery:** atomic JSON writes prevent partial JSON documents. The journal records intent
+  before a filesystem action and commits the outcome with its estate fingerprint. A single matching
+  interrupted action is retried through an idempotent adapter; quarantine recreates missing metadata
+  after a completed move. Unexplained drift, multiple interrupted actions, or an ambiguous state with
+  both published and quarantined copies still fail closed for operator review.
 - **Local trust:** the ledger and fingerprints do not defend against an operator who can rewrite
   both artifacts and their evidence. No hosted ledger audit was performed. Do not erase a failed
   chain to make verification pass.

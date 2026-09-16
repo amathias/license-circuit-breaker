@@ -199,6 +199,33 @@ class TestExportQuarantine:
         _run(registry, context, graph.EXPORT, Action.QUARANTINE)
         assert _run(registry, context, graph.EXPORT, Action.QUARANTINE).changed is False
 
+    def test_quarantine_retry_repairs_metadata_after_interrupted_move(
+        self, registry, context, paths
+    ):
+        target = quarantined_export_path(paths)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        export_path(paths).replace(target)
+        metadata = paths.quarantine_dir / "QUARANTINE.json"
+        assert not metadata.exists()
+
+        receipt = _run(registry, context, graph.EXPORT, Action.QUARANTINE)
+
+        assert receipt.changed is True
+        assert receipt.evidence["metadata_recovered"] is True
+        assert metadata.exists()
+
+    def test_quarantine_refuses_ambiguous_two_copy_state(self, registry, context, paths):
+        target = quarantined_export_path(paths)
+        target.parent.mkdir(parents=True, exist_ok=True)
+        target.write_bytes(export_path(paths).read_bytes())
+
+        receipt = registry.execute(context, graph.EXPORT, Action.QUARANTINE)
+
+        assert receipt.succeeded is False
+        assert "refusing to overwrite" in receipt.error
+        assert export_path(paths).exists()
+        assert target.exists()
+
     def test_quarantine_with_nothing_to_move_fails_rather_than_reporting_success(
         self, registry, context, paths
     ):

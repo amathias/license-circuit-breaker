@@ -354,6 +354,24 @@ class ExportQuarantineAdapter:
         published = context.guard_path(export_path(paths), "quarantine-source")
         target = context.guard_path(quarantined_export_path(paths), "quarantine-target")
         target.parent.mkdir(parents=True, exist_ok=True)
+        metadata_path = target.parent / "QUARANTINE.json"
+
+        def write_metadata(*, recovered: bool) -> None:
+            _write_json(
+                metadata_path,
+                {
+                    "urn": urn,
+                    "quarantined_at": datetime.now(UTC).isoformat(),
+                    "actor": context.actor,
+                    "reason": "approved containment action for a revoked upstream right",
+                    "original_path": str(published),
+                    "recovered_after_interruption": recovered,
+                    "note": (
+                        "Quarantine covers this tracked export only. Copies distributed "
+                        "outside the demonstrated DataHub graph are not addressed."
+                    ),
+                },
+            )
 
         if not published.exists():
             if not target.exists():
@@ -361,33 +379,33 @@ class ExportQuarantineAdapter:
                     f"cannot quarantine {urn}: no export exists at {published} and nothing "
                     "is already quarantined"
                 )
+            recovered = not metadata_path.exists()
+            if recovered:
+                write_metadata(recovered=True)
             return _receipt(
                 self.name,
                 urn,
                 action,
-                changed=False,
-                detail="export was already quarantined",
+                changed=recovered,
+                detail=(
+                    "recovered missing quarantine metadata after an interrupted action"
+                    if recovered
+                    else "export was already quarantined"
+                ),
                 evidence={
                     "published_path_exists": False,
                     "quarantine_path": str(target),
+                    "metadata_recovered": recovered,
                 },
             )
 
+        if target.exists():
+            raise ContainmentError(
+                f"cannot quarantine {urn}: both the published export and quarantine target "
+                "exist; refusing to overwrite either copy"
+            )
         shutil.move(str(published), str(target))
-        _write_json(
-            target.parent / "QUARANTINE.json",
-            {
-                "urn": urn,
-                "quarantined_at": datetime.now(UTC).isoformat(),
-                "actor": context.actor,
-                "reason": "approved containment action for a revoked upstream right",
-                "original_path": str(published),
-                "note": (
-                    "Quarantine covers this tracked export only. Copies distributed "
-                    "outside the demonstrated DataHub graph are not addressed."
-                ),
-            },
-        )
+        write_metadata(recovered=False)
 
         return _receipt(
             self.name,
@@ -398,6 +416,7 @@ class ExportQuarantineAdapter:
             evidence={
                 "published_path_exists": published.exists(),
                 "quarantine_path": str(target),
+                "metadata_recovered": False,
             },
         )
 

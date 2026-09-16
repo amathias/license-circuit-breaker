@@ -22,6 +22,8 @@ from collections.abc import Iterator
 from contextlib import contextmanager
 from pathlib import Path
 
+from app.locking import file_lock
+
 #: Bumped when the schema changes incompatibly.
 SCHEMA_VERSION = 2
 
@@ -111,16 +113,17 @@ class GovernanceStore:
         return self._path
 
     def _initialize(self) -> None:
-        with self.connect() as connection:
-            connection.executescript(_SCHEMA)
-            connection.execute("BEGIN IMMEDIATE")
-            columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
-            if "estate_fingerprint" not in columns:
-                connection.execute("ALTER TABLE runs ADD COLUMN estate_fingerprint TEXT")
-            connection.execute(
-                "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)",
-                (str(SCHEMA_VERSION),),
-            )
+        with file_lock(self._path.with_suffix(".init.lock")):
+            with self.connect() as connection:
+                connection.executescript(_SCHEMA)
+                connection.execute("BEGIN IMMEDIATE")
+                columns = {row[1] for row in connection.execute("PRAGMA table_info(runs)")}
+                if "estate_fingerprint" not in columns:
+                    connection.execute("ALTER TABLE runs ADD COLUMN estate_fingerprint TEXT")
+                connection.execute(
+                    "INSERT OR REPLACE INTO schema_meta (key, value) VALUES ('version', ?)",
+                    (str(SCHEMA_VERSION),),
+                )
 
     @contextmanager
     def connect(self) -> Iterator[sqlite3.Connection]:

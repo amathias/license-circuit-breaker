@@ -1,5 +1,35 @@
 # Coordinator Handoff: License Circuit Breaker
 
+## 2026-09-15 reliability phase — verified repository milestone
+
+This phase closes the two non-transactional gaps left after the independent review
+remediation. It changes repository behavior only; the hosted deployment and shared
+DataHub catalog were not touched.
+
+- **DataHub tag safety:** durable status and reversible probe tags now use SDK PATCH
+  proposals that add or remove only named tags. Unrelated concurrent tags are preserved,
+  and verification rejects conflicting revocation-status tags. Tag and property updates
+  remain separate writes; live PATCH acceptance is still a deployment gate.
+- **Interrupted execution:** the journal records exact action intent before an adapter
+  runs and atomically commits the final outcome with the new estate fingerprint. Resume
+  retries one matching interrupted action through its idempotent adapter while unexplained
+  drift or multiple pending actions still fail closed.
+- **Quarantine recovery:** a retry recreates missing metadata when an export move completed
+  before process termination. If both published and quarantined copies exist, enforcement
+  refuses to overwrite either copy.
+- **Evidence recovery:** a resumed run appends completed SQLite outcomes missing from the
+  receipt ledger exactly once. The ledger remains locally anchored only.
+- **Store startup:** schema initialization is serialized across cooperating processes,
+  removing the observed concurrent SQLite WAL initialization race.
+- **Validation:** 805 fast tests passed at 90.34% coverage; both clean archive-install tests
+  passed; Ruff, TypeScript, the production Vite build, frozen-lock validation, `pip check`,
+  and `git diff --check` passed. Regression tests cover process death after the quarantine
+  move, metadata repair, ambiguous two-copy refusal, ledger repair without duplicates,
+  tag PATCH shape, and preservation of a concurrent unrelated tag.
+
+ADR-035 records the recovery protocol and its limits. The deployment candidate remains
+unset until the coordinator verifies the existing live-state gates listed below.
+
 ## 2026-09-15 independent review remediation — verified repository milestone
 
 Claude's review of `1a97ca8` was reproduced and used to harden approval identity,

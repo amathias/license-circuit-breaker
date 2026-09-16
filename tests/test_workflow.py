@@ -241,6 +241,14 @@ class TestReversibleWriteback:
             reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)
         assert sorted(client.get_tags(SOURCE)) == before
 
+    def test_preexisting_probe_tag_is_not_removed(self, client):
+        client.patch_tags(SOURCE, add=(REVOCATION_TAG,))
+
+        receipt = reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)
+
+        assert receipt.clean
+        assert REVOCATION_TAG in client.get_tags(SOURCE)
+
     def test_records_prior_value(self, client):
         prior = list(client.get_tags(SOURCE))
         receipt = reversible_tag_writeback(client, SOURCE, REVOCATION_TAG, NS)

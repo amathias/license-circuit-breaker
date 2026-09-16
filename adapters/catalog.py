@@ -277,6 +277,23 @@ class LiveCatalog:
         builder.add_custom_properties({str(key): str(value) for key, value in properties.items()})
         self.emit(list(builder.build()))
 
+    def patch_tags(
+        self, urn: str, *, add: tuple[str, ...] = (), remove: tuple[str, ...] = (),
+    ) -> None:
+        """Patch named tags without replacing the entity's complete tag aspect."""
+        require_in_namespace(urn, self._namespace, operation="catalog-tags-patch")
+        from datahub.metadata.schema_classes import TagAssociationClass
+        from datahub.specific.dataset import DatasetPatchBuilder
+
+        builder = DatasetPatchBuilder(urn)
+        for tag in sorted(set(remove) - set(add)):
+            builder.remove_tag(tag_urn(tag))
+        for tag in sorted(set(add)):
+            builder.add_tag(TagAssociationClass(tag=tag_urn(tag)))
+        proposals = list(builder.build())
+        if proposals:
+            self.emit(proposals)
+
     def set_status(self, urn: str, removed: bool) -> None:
         """Soft-delete or restore one entity.
 

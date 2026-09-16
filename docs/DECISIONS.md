@@ -1045,7 +1045,8 @@ use a flushed temporary file and atomic replacement. Neither the local hash chai
 nor estate fingerprints are externally anchored, so they do not prove that a local
 administrator has preserved history. Tail deletion remains outside the ledger's
 integrity guarantee. Filesystem effects and SQLite checkpoints are not one transaction;
-drift after a crash conservatively refuses resume.
+this decision originally refused all post-crash drift. ADR-035 supersedes that behavior
+for one exact action whose intent was durably recorded; unexplained drift still refuses.
 
 **Consequence:** legacy runs without fingerprints require a fresh reviewed run.
 Historical API evidence is an execution-time snapshot; the default evidence view
@@ -1070,6 +1071,33 @@ The reproducible dependency set is `uv.lock`; CI adds archive installation and p
 actions by commit. The isolated project build uses setuptools 83.0.0, while the pinned
 DataHub SDK still requires an older runtime setuptools. The dependency exception and
 all finding-level limits are recorded in [REVIEW_REMEDIATION.md](REVIEW_REMEDIATION.md).
+
+## ADR-035: Non-transactional boundaries use narrow patches and durable action intent
+
+**Date:** 2026-09-15 · **Status:** accepted (local post-submission hardening)
+
+DataHub status tags previously replaced the complete tag aspect after an indexed read,
+so an unrelated tag added by another writer could be lost. Local containment previously
+recorded a step only after its filesystem effect, so a process death in that interval left
+fingerprint drift with no durable explanation.
+
+**Decision:** status and reversible probe tags use the pinned DataHub SDK's PATCH builder
+to add and remove only named tags. Status verification rejects conflicting status tags.
+The tag and custom-property updates remain separate writes and make no cross-aspect
+transaction claim.
+
+Before an adapter can act, execution stores an `in_progress` row containing the exact run,
+sequence, URN, and action. The final outcome and new estate fingerprint then commit in one
+SQLite transaction. Resume may tolerate fingerprint drift only when exactly one matching
+intent explains it, and retries that action through an idempotent adapter. Export quarantine
+repairs metadata when the move completed before interruption and refuses to overwrite when
+both the published and quarantined copies exist. Completed SQLite outcomes missing from the
+append-only ledger are appended once during resume.
+
+SQLite and filesystem changes still cannot share one transaction. This recovery protocol
+depends on the cooperative estate lock and adapter convergence; unexplained drift and
+multiple pending intents fail closed. The local ledger still has no external anchor, and
+the live DataHub server must accept the SDK PATCH shape before deployment.
 
 ## Versions
 

@@ -41,6 +41,39 @@ def test_property_write_emits_sdk_patch_without_stale_metadata_read():
     }]
 
 
+def test_tag_write_emits_sdk_patches_without_replacing_global_tags():
+    from demo import graph
+
+    ns = Settings(_env_file=None).namespace
+    catalog = LiveCatalog("https://datahub.invalid", "test-token", ns)
+    emitter = Mock()
+    catalog._emitter = emitter
+    client = LiveDataHubClient(
+        mcp_url="https://mcp.invalid", gms_url="https://datahub.invalid",
+        token="test-token", namespace=ns,
+    )
+    client._catalog = catalog
+
+    client.patch_tags(
+        graph.SOURCE,
+        add=("license-revocation-contained",),
+        remove=("license-revocation-residual",),
+    )
+
+    proposals = [call.args[0].to_obj() for call in emitter.emit.call_args_list]
+    assert proposals
+    assert {proposal["changeType"] for proposal in proposals} == {"PATCH"}
+    assert {proposal["aspectName"] for proposal in proposals} == {"globalTags"}
+    operations = [
+        operation
+        for proposal in proposals
+        for operation in json.loads(proposal["aspect"]["value"])["patch"]
+    ]
+    assert {operation["op"] for operation in operations} == {"add", "remove"}
+    assert any("license-revocation-contained" in operation["path"] for operation in operations)
+    assert any("license-revocation-residual" in operation["path"] for operation in operations)
+
+
 def test_global_pending_confirmations_bound_distinct_clients():
     guard = DemoMutationGuard()
     for index in range(3):

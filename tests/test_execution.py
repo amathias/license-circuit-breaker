@@ -12,7 +12,7 @@ from datetime import UTC, datetime
 
 import pytest
 
-from adapters.containment import AdapterContext, ContainmentError
+from adapters.containment import AdapterContext, AdapterRegistry, ContainmentError
 from adapters.fake_datahub import FakeDataHubClient
 from app.approvals import REJECTED, ApprovalStore
 from app.execution import (
@@ -41,6 +41,7 @@ from demo.estate import (
     build_estate,
     export_path,
     index_manifest,
+    quarantined_export_path,
     training_manifest,
 )
 from demo.seed import seed
@@ -336,6 +337,42 @@ class TestResume:
         completed = ExecutionJournal(reopened).completed_steps(first.run_id)
         assert len(completed) == len(first.outcomes)
 
+    def test_interrupted_action_can_resume_after_its_filesystem_change(
+        self, plan, approval, context, store, paths
+    ):
+        class CrashAfterQuarantine:
+            def __init__(self):
+                self._registry = AdapterRegistry()
+
+            def execute(self, adapter_context, urn, action):
+                receipt = self._registry.execute(adapter_context, urn, action)
+                if action is Action.QUARANTINE:
+                    raise KeyboardInterrupt("simulated process termination after move")
+                return receipt
+
+        run_id = "run-interrupted"
+        with pytest.raises(KeyboardInterrupt):
+            execute_plan(
+                plan, approval, context, store,
+                registry=CrashAfterQuarantine(), run_id=run_id,
+            )
+
+        pending = ExecutionJournal(store).in_progress_steps(run_id)
+        assert len(pending) == 1
+        assert next(iter(pending.values()))["action"] == Action.QUARANTINE.value
+        assert not export_path(paths).exists()
+        assert quarantined_export_path(paths).exists()
+
+        resumed = execute_plan(plan, approval, context, store, run_id=run_id)
+
+        assert not resumed.failed
+        assert ExecutionJournal(store).in_progress_steps(run_id) == {}
+        quarantine = next(
+            outcome for outcome in resumed.outcomes
+            if outcome.step.action is Action.QUARANTINE
+        )
+        assert quarantine.changed is False
+
     def test_scope_widening_requires_a_fresh_run(
         self, plan, context, store, paths
     ):
@@ -406,6 +443,23 @@ class TestLedger:
             for entry in ledger.entries()
             if entry["operation"].startswith("containment.")
         )
+
+    def test_resume_repairs_missing_ledger_entries_without_duplicates(
+        self, plan, approval, context, store, tmp_path
+    ):
+        first = execute_plan(plan, approval, context, store)
+        ledger = ReceiptLedger(tmp_path / "ledger-repair")
+
+        execute_plan(plan, approval, context, store, run_id=first.run_id, ledger=ledger)
+        execute_plan(plan, approval, context, store, run_id=first.run_id, ledger=ledger)
+
+        entries = [
+            entry for entry in ledger.entries()
+            if entry.get("payload", {}).get("run_id") == first.run_id
+        ]
+        assert len(entries) == len(first.outcomes)
+        assert len({entry["payload"]["seq"] for entry in entries}) == len(first.outcomes)
+        assert ledger.verify_chain()[0] is True
 
     def test_a_failed_step_is_recorded_as_a_failure(
         self, plan, approval, context, store, tmp_path
